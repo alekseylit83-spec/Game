@@ -1,0 +1,1934 @@
+<!DOCTYPE html>
+<!--
+  ВЕСЁЛЫЙ ПОВАР — ретро 8-битная браузерная игра. Весь проект — в этом одном файле:
+  без библиотек, без картинок и шрифтов, без обращений в интернет (работает офлайн).
+  Графика (спрайты, кухня, шрифт с кириллицей) и звук (Web Audio) нарисованы и синтезируются в коде.
+  Управление: стрелки ← → (или A / D) — двигаться, Пробел — старт, P — пауза, M — звук.
+  С третьего уровня на кухню заходят официанты: столкнёшься — повар оглушён, а комбо сбито.
+  После каждых двух уровней повар выходит на огород: собирает 30 овощей (↑ прыжок, Пробел удар сковородкой),
+  перепрыгивает камни, давит колорадских жуков и возвращается на кухню. Очки дают дополнительные жизни.
+  Для GitHub Pages достаточно выложить этот index.html.
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Весёлый повар — ретро 8-битная игра: лови еду сковородкой, не давай коту её съесть и не попадайся под ноги официантам и собирай урожай на огороде.">
+<title>Весёлый повар</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #07060c; overflow: hidden; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+         font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: #7d7aa0; }
+  #tv { display: block; width: 900px; height: 600px; border-radius: 46px; outline: none;
+        image-rendering: crisp-edges; image-rendering: pixelated;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, .7), 0 0 0 1px #000; }
+  #hint { margin: 0; text-align: center; letter-spacing: .03em; }
+  kbd { display: inline-block; min-width: 1.6em; padding: 0 .4em; border: 1px solid #3a3852; border-bottom-width: 2px;
+        border-radius: 4px; background: #14121e; color: #b9b6d6; font: inherit; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="tv" width="900" height="600" tabindex="0" role="img"
+        aria-label="Игра «Весёлый повар»: повар подбрасывает еду сковородкой. Управление: стрелки влево и вправо, пробел — старт, P — пауза, M — звук."></canvas>
+<p id="hint"><kbd>←</kbd> <kbd>→</kbd> двигаться &nbsp;·&nbsp; <kbd>Пробел</kbd> старт &nbsp;·&nbsp; <kbd>P</kbd> пауза &nbsp;·&nbsp; <kbd>M</kbd> звук &nbsp;·&nbsp; на огороде: <kbd>↑</kbd> прыжок, <kbd>Пробел</kbd> удар</p>
+<noscript><p>Для игры нужен включённый JavaScript.</p></noscript>
+<script>
+'use strict';
+/* =====================================================================
+   ПАЛИТРА — 20 цветов на всю игру (как на старой приставке)
+   ===================================================================== */
+const PAL = {
+  k: '#0d0b1a',  // чернила (контуры)
+  n: '#2a2745',  // ночь
+  s: '#57567a',  // сланец
+  f: '#9d9cbf',  // туман
+  l: '#d9d7ea',  // светлая тень
+  w: '#f7f3e8',  // сливочный белый
+  R: '#e8443a',  // красный
+  r: '#a8232f',  // тёмно-красный
+  o: '#f08a24',  // оранжевый
+  y: '#f7d23e',  // жёлтый
+  G: '#62c84a',  // зелёный
+  g: '#237a3b',  // тёмно-зелёный
+  B: '#5aa8ec',  // небесный
+  b: '#2b4aa8',  // синий
+  V: '#9cd0f8',  // светло-голубой
+  v: '#3c82c8',  // средне-голубой
+  C: '#b8743a',  // карамель
+  c: '#6b3a1e',  // шоколад
+  p: '#f7b48a',  // кожа
+  P: '#f078a8'   // розовый
+};
+
+/* ===================== Помощники для пиксель-арта ===================== */
+function mkCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+
+// Строки символов -> canvas. sym=true: строки заданы левой половиной (с центром) и зеркалятся.
+function spriteFromRows(rows, sym) {
+  const full = sym ? rows.map(r => r + r.slice(0, -1).split('').reverse().join('')) : rows;
+  const w = full[0].length, h = full.length;
+  const c = mkCanvas(w, h), x = c.getContext('2d');
+  for (let j = 0; j < h; j++) {
+    if (full[j].length !== w) throw new Error('Спрайт: ширина строки ' + j + ' = ' + full[j].length + ', ожидалось ' + w);
+    for (let i = 0; i < w; i++) {
+      const ch = full[j][i];
+      if (ch === '.') continue;
+      if (!PAL[ch]) throw new Error('Спрайт: неизвестный цвет "' + ch + '"');
+      x.fillStyle = PAL[ch];
+      x.fillRect(i, j, 1, 1);
+    }
+  }
+  return c;
+}
+
+function flipH(src) {
+  const c = mkCanvas(src.width, src.height), x = c.getContext('2d');
+  x.translate(src.width, 0); x.scale(-1, 1); x.drawImage(src, 0, 0);
+  return c;
+}
+
+// Поворот на 90° по часовой стрелке — попиксельно, без сглаживания
+function rot90(src) {
+  const w = src.width, h = src.height;
+  const s = src.getContext('2d').getImageData(0, 0, w, h);
+  const c = mkCanvas(h, w), x = c.getContext('2d');
+  const d = x.createImageData(h, w);
+  for (let y = 0; y < h; y++) for (let i = 0; i < w; i++) {
+    const si = (y * w + i) * 4, di = (i * h + (h - 1 - y)) * 4;
+    d.data[di] = s.data[si]; d.data[di + 1] = s.data[si + 1];
+    d.data[di + 2] = s.data[si + 2]; d.data[di + 3] = s.data[si + 3];
+  }
+  x.putImageData(d, 0, 0);
+  return c;
+}
+function frames4(c) { const a = c, b = rot90(a), d = rot90(b), e = rot90(d); return [a, b, d, e]; }
+
+// Мини-редактор: сетка символов + фигуры + автоконтур
+class PX {
+  constructor(w, h) { this.w = w; this.h = h; this.g = Array.from({ length: h }, () => new Array(w).fill('.')); }
+  get(x, y) { return (x < 0 || y < 0 || x >= this.w || y >= this.h) ? '.' : this.g[y][x]; }
+  px(x, y, c, over) {
+    x = Math.round(x); y = Math.round(y);
+    if (x < 0 || y < 0 || x >= this.w || y >= this.h) return this;
+    if (over !== undefined && this.g[y][x] !== over) return this;
+    this.g[y][x] = c; return this;
+  }
+  rect(x, y, w, h, c, over) { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.px(x + i, y + j, c, over); return this; }
+  ell(cx, cy, rx, ry, c, over) {
+    for (let y = Math.floor(cy - ry - 1); y <= Math.ceil(cy + ry + 1); y++)
+      for (let x = Math.floor(cx - rx - 1); x <= Math.ceil(cx + rx + 1); x++) {
+        const dx = (x - cx) / (rx + 0.4), dy = (y - cy) / (ry + 0.4);
+        if (dx * dx + dy * dy <= 1) this.px(x, y, c, over);
+      }
+    return this;
+  }
+  line(x0, y0, x1, y1, c, over) {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let e = dx + dy;
+    for (;;) {
+      this.px(x0, y0, c, over);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * e;
+      if (e2 >= dy) { e += dy; x0 += sx; }
+      if (e2 <= dx) { e += dx; y0 += sy; }
+    }
+    return this;
+  }
+  // капсула: отрезок с радиусом (толстая линия со скруглёнными концами)
+  cap(x0, y0, x1, y1, r, c, over) {
+    const minx = Math.floor(Math.min(x0, x1) - r - 1), maxx = Math.ceil(Math.max(x0, x1) + r + 1);
+    const miny = Math.floor(Math.min(y0, y1) - r - 1), maxy = Math.ceil(Math.max(y0, y1) + r + 1);
+    const vx = x1 - x0, vy = y1 - y0, L2 = vx * vx + vy * vy || 1;
+    for (let y = miny; y <= maxy; y++) for (let x = minx; x <= maxx; x++) {
+      let t = ((x - x0) * vx + (y - y0) * vy) / L2; t = Math.max(0, Math.min(1, t));
+      const px = x0 + t * vx - x, py = y0 + t * vy - y;
+      if (px * px + py * py <= (r + 0.4) * (r + 0.4)) this.px(x, y, c, over);
+    }
+    return this;
+  }
+  tri(x0, y0, x1, y1, x2, y2, c, over) {
+    const minx = Math.floor(Math.min(x0, x1, x2)), maxx = Math.ceil(Math.max(x0, x1, x2));
+    const miny = Math.floor(Math.min(y0, y1, y2)), maxy = Math.ceil(Math.max(y0, y1, y2));
+    const den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+    for (let y = miny; y <= maxy; y++) for (let x = minx; x <= maxx; x++) {
+      const a = ((y1 - y2) * (x - x2) + (x2 - x1) * (y - y2)) / den;
+      const b = ((y2 - y0) * (x - x2) + (x0 - x2) * (y - y2)) / den;
+      const g = 1 - a - b, e = -0.08;
+      if (a >= e && b >= e && g >= e) this.px(x, y, c, over);
+    }
+    return this;
+  }
+  // нижняя кромка фигуры темнее — объём
+  shadeBottom(from, to) {
+    for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++)
+      if (this.g[y][x] === from && this.get(x, y + 1) === '.') this.g[y][x] = to;
+    return this;
+  }
+  outline(c) {
+    c = c || 'k';
+    const add = [];
+    for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
+      if (this.g[y][x] !== '.') continue;
+      if (this.get(x - 1, y) !== '.' || this.get(x + 1, y) !== '.' || this.get(x, y - 1) !== '.' || this.get(x, y + 1) !== '.') add.push([x, y]);
+    }
+    for (const [x, y] of add) this.g[y][x] = c;
+    return this;
+  }
+  rows() { return this.g.map(r => r.join('')); }
+  canvas() { return spriteFromRows(this.rows(), false); }
+}
+
+/* ========================= ПОВАР ========================= */
+// Верхняя часть: колпак, лицо, китель (левая половина + центр, зеркалится)
+const COOK_ROWS = [
+  '.......kkkk',
+  '....kkkwwww',
+  '...kwwwwwww',
+  '..kwwwwlwww',
+  '..kwwwwlwww',
+  '..kwwwwlwww',
+  '..kwwwwlwww',
+  '...kwwlwwww',
+  '....kwwwwww',
+  '....kkkkkkk',
+  '....kwwwwww',
+  '....kllllll',
+  '....kkkkkkk',
+  '.....kppppp',
+  '.....kpccpp',
+  '.....kppkpp',
+  '.....kppkpp',
+  '.....kPPpRR',
+  '.....kcccRR',
+  '.....kccccc',
+  '......kprrr',
+  '.......kkkk',
+  '.....kRRRRR',
+  '...kkwwwwwR',
+  '..kwwwwwwwR',
+  '..kwwwwwwwl',
+  '..kwwwwwwwk',
+  '..kwwwwwwwl',
+  '..kwwwwwwwk',
+  '..kwwwwwwwl',
+  '..kwwwwwlll',
+  '..kkkkkkkkk'
+];
+// Нога (носок смотрит влево); правая — зеркальная
+const LEG_ROWS = [
+  '..kbbbbbk',
+  '..kbvbbbk',
+  '..kbvbbbk',
+  '..kbvbbbk',
+  '..kbbbbbk',
+  '..kbbbbbk',
+  '.kkbbbbbk',
+  'kcccccccck'.slice(0, 9),
+  'kkkkkkkkk'
+];
+
+// Сковородка: ручка слева, эллипс справа (в профиль, слегка сверху)
+function mkPan() {
+  const p = new PX(32, 9);
+  // ручка
+  p.rect(1, 3, 8, 2, 'c'); p.rect(1, 3, 8, 1, 'C');
+  // тело сковороды
+  p.ell(20, 4, 12, 3, 's');
+  p.ell(20, 3, 11, 2, 'f');       // светлый ободок
+  p.ell(20, 3, 9, 1.4, 'n');      // тёмная внутренность
+  p.shadeBottom('s', 'n');
+  p.outline('k');
+  return p.canvas();
+}
+
+/* ========================= ЕДА ========================= */
+function mkSausage() {
+  const p = new PX(18, 9);
+  p.cap(4, 4, 13, 4, 3, 'R');
+  p.line(4, 2, 12, 2, 'P', 'R');
+  p.line(4, 6, 13, 6, 'r', 'R');
+  for (const x of [6, 9, 12]) { p.px(x, 3, 'r', 'R'); p.px(x + 1, 4, 'r', 'R'); p.px(x + 2, 5, 'r', 'R'); }
+  p.outline('k');
+  return p.canvas();
+}
+function mkFish() {
+  const p = new PX(20, 13);
+  p.tri(7, 6, 1, 1, 1, 11, 'o');                // хвост
+  p.tri(9, 3, 13, 3, 12, 0, 'o');               // плавник сверху
+  p.ell(12, 6, 6, 4, 'y');                      // тело
+  p.ell(12, 4, 5, 1, 'o', 'y');                 // спинка
+  p.ell(12, 8, 5, 1.2, 'w', 'y');               // брюшко
+  p.px(16, 5, 'w'); p.px(17, 5, 'k');           // глаз
+  for (const y of [4, 5, 6, 7]) p.px(14, y, 'o', 'y');   // жабра
+  for (const [x, y] of [[10, 5], [8, 6], [10, 7], [12, 6]]) p.px(x, y, 'o', 'y');   // чешуя
+  p.outline('k');
+  return p.canvas();
+}
+function mkEgg() {
+  const p = new PX(16, 13);
+  p.ell(6, 6, 5, 4, 'w'); p.ell(10, 7, 4, 3, 'w'); p.ell(5, 9, 3, 2, 'w');
+  p.shadeBottom('w', 'l');
+  p.ell(7, 5, 2.2, 2.2, 'y');
+  p.px(8, 6, 'o'); p.px(7, 6, 'o'); p.px(6, 4, 'w');
+  p.outline('k');
+  return p.canvas();
+}
+function mkSteak() {
+  const p = new PX(18, 14);
+  p.ell(8, 7, 7, 5, 'c');
+  p.ell(8, 7, 6, 4, 'C');
+  p.line(4, 4, 9, 9, 'c', 'C'); p.line(7, 3, 12, 8, 'c', 'C'); p.line(3, 7, 6, 10, 'c', 'C'); p.line(10, 3, 13, 6, 'c', 'C');
+  p.ell(12, 9, 2, 1.6, 'w'); p.px(12, 9, 'l');    // косточка
+  p.outline('k');
+  return p.canvas();
+}
+function mkDrumstick() {
+  const p = new PX(19, 19);
+  p.cap(10, 10, 15, 15, 1.3, 'w');                 // косточка
+  p.ell(16, 15, 1.8, 1.8, 'w'); p.ell(15, 17, 1.6, 1.6, 'w'); p.ell(17, 13, 1.4, 1.4, 'w');
+  p.ell(6, 6, 5, 5, 'C');
+  p.ell(5, 5, 2.2, 2.2, 'y', 'C');                 // золотистая корочка
+  p.shadeBottom('C', 'c');
+  p.line(9, 4, 9, 9, 'c', 'C'); p.line(4, 9, 8, 9, 'c', 'C');
+  p.outline('k');
+  return p.canvas();
+}
+
+function mkToqueIcon() {            // значок жизни: колпак с красной лентой
+  const p = new PX(11, 10);
+  p.ell(3, 4, 2.6, 2.6, 'w'); p.ell(7, 4, 2.6, 2.6, 'w'); p.ell(5, 3.6, 3, 3, 'w');
+  p.rect(2, 6, 7, 1, 'w');
+  p.shadeBottom('w', 'l');
+  p.rect(2, 7, 7, 2, 'R'); p.rect(2, 8, 7, 1, 'r');
+  p.outline('k');
+  return p.canvas();
+}
+
+/* ========================= КОТ ========================= */
+function mkCatSit() {
+  const p = new PX(19, 24);
+  p.ell(9, 17, 6, 5, 'o');                        // туловище
+  p.ell(9, 17, 3, 4, 'w');                        // грудка
+  p.ell(9, 9, 7, 5, 'o');                         // голова
+  p.tri(2, 5, 8, 4, 3, 0, 'o'); p.tri(16, 5, 10, 4, 15, 0, 'o');  // уши
+  p.tri(3, 4, 5, 4, 3, 2, 'P'); p.tri(15, 4, 13, 4, 15, 2, 'P');
+  p.ell(5, 11, 2, 1.2, 'w'); p.ell(13, 11, 2, 1.2, 'w');       // щёки
+  p.px(7, 5, 'r'); p.px(9, 5, 'r'); p.px(11, 5, 'r'); p.px(9, 6, 'r');   // полоски
+  p.rect(5, 8, 2, 2, 'G'); p.rect(12, 8, 2, 2, 'G');
+  p.px(6, 8, 'k'); p.px(6, 9, 'k'); p.px(12, 8, 'k'); p.px(12, 9, 'k');  // зрачки
+  p.px(9, 11, 'P'); p.px(9, 12, 'k'); p.px(8, 13, 'k'); p.px(10, 13, 'k');
+  p.rect(6, 20, 3, 2, 'w'); p.rect(10, 20, 3, 2, 'w');          // лапки
+  p.outline('k');
+  return p.canvas();
+}
+function mkCatTail(frame) {
+  const p = new PX(9, 14);
+  if (frame === 0) { p.cap(1, 12, 3, 6, 1.1, 'o'); p.cap(3, 6, 6, 2, 1.1, 'o'); p.px(6, 2, 'r'); }
+  else { p.cap(1, 12, 4, 8, 1.1, 'o'); p.cap(4, 8, 7, 8, 1.1, 'o'); p.px(7, 8, 'r'); }
+  p.outline('k');
+  return p.canvas();
+}
+// Бег: голова слева
+function mkCatRun(frame) {
+  const p = new PX(32, 17);
+  // хвост
+  p.cap(26, 8, 30, 3, 1.1, 'o');
+  // туловище и голова
+  p.ell(19, 8, 9, 4, 'o');
+  p.ell(7, 8, 5, 4, 'o');
+  p.tri(3, 2, 3, 6, 7, 4, 'o'); p.tri(8, 2, 8, 5, 11, 5, 'o');
+  p.px(4, 4, 'P'); p.px(9, 4, 'P');
+  p.ell(3, 10, 2, 1.2, 'w');                        // мордочка
+  for (const x of [15, 18, 21]) p.px(x, 5, 'r'); // полоски
+  p.px(14, 6, 'r'); p.px(17, 6, 'r'); p.px(20, 6, 'r');
+  p.px(5, 7, 'k'); p.px(5, 8, 'k'); p.px(6, 7, 'G');    // глаз
+  p.px(1, 9, 'P');                                   // нос
+  // лапы
+  if (frame === 0) {
+    p.cap(11, 11, 4, 14, 1, 'o'); p.cap(14, 12, 9, 15, 1, 'o');
+    p.cap(25, 11, 30, 14, 1, 'o'); p.cap(22, 12, 26, 15, 1, 'o');
+  } else {
+    p.cap(11, 11, 11, 15, 1, 'o'); p.cap(14, 12, 14, 15, 1, 'o');
+    p.cap(24, 11, 24, 15, 1, 'o'); p.cap(21, 12, 21, 15, 1, 'o');
+  }
+  p.outline('k');
+  return p.canvas();
+}
+// Ест: голова опущена
+function mkCatEat(frame) {
+  const p = new PX(32, 17);
+  p.cap(26, 8, 30, 4, 1.1, 'o');
+  p.ell(20, 8, 9, 4, 'o');
+  p.ell(8, 11, 5, 4, 'o');
+  p.tri(4, 5, 4, 9, 8, 7, 'o'); p.tri(9, 5, 9, 8, 12, 8, 'o');
+  p.px(5, 7, 'P'); p.px(10, 7, 'P');
+  p.ell(4, 13, 2, 1.2, 'w');
+  for (const x of [16, 19, 22]) p.px(x, 5, 'r');
+  p.px(6, 10, 'k'); p.px(6, 11, 'k'); p.px(7, 10, 'G');
+  p.px(2, 12, 'P');
+  if (frame === 0) { p.px(3, 14, 'r'); p.px(4, 14, 'r'); }      // рот открыт
+  p.cap(13, 11, 13, 15, 1, 'o'); p.cap(16, 12, 16, 15, 1, 'o');
+  p.cap(25, 11, 25, 15, 1, 'o'); p.cap(22, 12, 22, 15, 1, 'o');
+  p.outline('k');
+  return p.canvas();
+}
+
+/* ========================= ОФИЦИАНТ ========================= */
+// Смотрит вправо, влево — зеркальная копия. Два кадра шага. Поднос с крышкой над головой.
+function mkWaiter(frame) {
+  const p = new PX(28, 42);
+  if (frame === 0) { p.cap(13, 31, 16, 38, 1.7, 'n'); p.cap(10, 31, 7, 38, 1.7, 'n'); p.rect(15, 39, 5, 2, 'k'); p.rect(4, 39, 5, 2, 'k'); }
+  else { p.cap(13, 31, 13, 38, 1.7, 'n'); p.cap(10, 31, 10, 38, 1.7, 'n'); p.rect(12, 39, 5, 2, 'k'); p.rect(7, 39, 5, 2, 'k'); }
+  p.rect(7, 16, 10, 16, 'n');                       // жилет
+  p.rect(14, 17, 2, 13, 'w');                       // рубашка на груди
+  p.rect(7, 29, 10, 2, 'k');                        // ремень
+  p.px(9, 20, 's'); p.px(9, 23, 's'); p.px(9, 26, 's');
+  p.ell(12, 10, 4.4, 4.7, 'p');                     // голова
+  p.ell(10.5, 6.6, 4.4, 2.3, 'n'); p.rect(7, 8, 2, 3, 'n');   // причёска
+  p.px(14, 10, 'w'); p.px(15, 10, 'k'); p.px(14, 9, 'n'); p.px(15, 9, 'n');   // глаз и бровь
+  p.px(10, 11, 'C');                                // ухо
+  p.rect(17, 11, 2, 2, 'p');                        // нос
+  p.rect(14, 13, 4, 1, 'n');                        // усы
+  p.rect(9, 15, 6, 1, 'w'); p.rect(13, 15, 4, 2, 'R'); p.px(14, 15, 'r');   // воротник и бабочка
+  p.cap(8, 18, 7, 28, 1.5, 'w'); p.px(7, 29, 'p'); p.px(7, 30, 'p');         // свободная рука
+  p.cap(15, 19, 20, 17, 1.5, 'w'); p.cap(20, 17, 23, 10, 1.5, 'w'); p.ell(23, 9, 1.7, 1.5, 'p');   // рука с подносом
+  p.rect(17, 7, 10, 2, 'f'); p.ell(23, 5, 3.4, 2.6, 'l'); p.px(23, 2, 'f');  // поднос с крышкой
+  p.outline('k');
+  return p.canvas();
+}
+
+/* ================= ОГОРОД: овощи, камни, колорадский жук ================= */
+function mkCarrot() {
+  const p = new PX(13, 19);
+  p.cap(6, 4, 3, 2, 0.9, 'G'); p.cap(6, 4, 9, 2, 0.9, 'G'); p.cap(6, 4, 6, 1, 0.9, 'g');   // ботва
+  p.tri(2, 5, 10, 5, 6, 17, 'o'); p.rect(2, 4, 9, 2, 'o');
+  p.line(3, 6, 4, 10, 'y', 'o');                                                            // блик
+  p.line(5, 9, 7, 9, 'C', 'o'); p.line(5, 12, 7, 12, 'C', 'o');                             // бороздки
+  p.outline('k');
+  return p.canvas();
+}
+function mkCabbage() {
+  const p = new PX(15, 14);
+  p.ell(7, 7, 6.2, 5.4, 'g'); p.ell(7, 6.5, 5.2, 4.5, 'G'); p.ell(7, 6, 2.6, 2.3, 'w');
+  p.line(3, 5, 5, 3, 'g', 'G'); p.line(11, 5, 9, 3, 'g', 'G'); p.line(2, 8, 6, 9, 'g', 'G'); p.line(12, 8, 8, 9, 'g', 'G');
+  p.px(4, 4, 'w'); p.px(5, 4, 'w');
+  p.outline('k');
+  return p.canvas();
+}
+function mkTomato() {
+  const p = new PX(13, 13);
+  p.ell(6, 7, 5, 4.4, 'R'); p.shadeBottom('R', 'r');
+  p.px(3, 5, 'w'); p.px(4, 4, 'w'); p.px(3, 6, 'P');
+  p.rect(5, 2, 3, 2, 'G'); p.px(3, 3, 'g'); p.px(4, 3, 'g'); p.px(8, 3, 'g'); p.px(9, 3, 'g'); p.px(6, 1, 'g');
+  p.outline('k');
+  return p.canvas();
+}
+function mkCucumber() {
+  const p = new PX(18, 9);
+  p.cap(4, 4, 13, 4, 2.6, 'g'); p.line(4, 3, 13, 3, 'G', 'g');
+  for (const [x, y] of [[6, 5], [9, 5], [11, 4], [7, 4]]) p.px(x, y, 'G', 'g');
+  p.px(2, 4, 'y', 'g'); p.px(15, 4, 'y', 'g');
+  p.outline('k');
+  return p.canvas();
+}
+function mkRock(v) {
+  const p = v ? new PX(14, 11) : new PX(18, 14);
+  if (v) { p.ell(7, 6, 5.5, 3.6, 'f'); p.ell(5, 5, 2.4, 1.6, 'l', 'f'); p.shadeBottom('f', 's'); p.px(9, 4, 'n', 'f'); p.px(10, 5, 'n', 'f'); p.px(3, 7, 'g', 's'); }
+  else { p.ell(9, 7, 7.4, 5.4, 'f'); p.ell(6, 5, 3.4, 2.4, 'l', 'f'); p.shadeBottom('f', 's'); p.line(11, 4, 13, 9, 'n', 'f'); p.px(4, 10, 'g', 's'); p.px(5, 10, 'g', 's'); }
+  p.outline('k');
+  return p.canvas();
+}
+// Колорадский жук: жёлтая спинка в чёрную полоску. Смотрит влево.
+function mkBeetle(frame) {
+  const p = new PX(15, 13);
+  p.ell(8, 6, 5.6, 4.2, 'y'); p.shadeBottom('y', 'o');
+  for (const x of [6, 8, 10, 12]) p.line(x, 3, x, 9, 'k', 'y');
+  p.ell(3, 7, 2.4, 2.4, 'k'); p.px(3, 6, 'R');
+  const off = frame ? 1 : 0;
+  p.px(5 + off, 11, 'k'); p.px(8 - off, 11, 'k'); p.px(11 + off, 11, 'k');
+  p.px(1, 4, 'k'); p.px(0, 3, 'k');
+  p.outline('k');
+  return p.canvas();
+}
+function mkBeetleDead() {
+  const p = new PX(15, 6);
+  p.rect(2, 2, 11, 2, 'y'); p.rect(2, 3, 11, 1, 'o');
+  for (const x of [4, 6, 8, 10]) p.px(x, 2, 'k');
+  p.rect(1, 3, 2, 1, 'k'); p.px(3, 1, 'k'); p.px(12, 1, 'k');
+  p.outline('k');
+  return p.canvas();
+}
+
+/* ======================= Сборка набора ======================= */
+const SPR = {};
+function buildSprites() {
+  SPR.cook = spriteFromRows(COOK_ROWS, true);
+  SPR.legL = spriteFromRows(LEG_ROWS, false);
+  SPR.legR = flipH(SPR.legL);
+  SPR.pan = mkPan();
+  SPR.panL = flipH(SPR.pan);
+  SPR.toque = mkToqueIcon();
+  SPR.foods = [
+    { name: 'сосиска', pts: 10, f: frames4(mkSausage()) },
+    { name: 'рыба', pts: 15, f: frames4(mkFish()) },
+    { name: 'яичница', pts: 20, f: frames4(mkEgg()) },
+    { name: 'стейк', pts: 25, f: frames4(mkSteak()) },
+    { name: 'окорочок', pts: 30, f: frames4(mkDrumstick()) }
+  ];
+  SPR.waiter = [mkWaiter(0), mkWaiter(1)];
+  SPR.waiterL = SPR.waiter.map(flipH);
+  SPR.veg = [mkCarrot(), mkCabbage(), mkTomato(), mkCucumber()];        // морковь, капуста, помидор, огурец
+  SPR.rock = [mkRock(0), mkRock(1)];
+  SPR.bug = [mkBeetle(0), mkBeetle(1)]; SPR.bugR = SPR.bug.map(flipH); SPR.bugDead = mkBeetleDead();
+  SPR.catSit = mkCatSit();
+  SPR.catTail = [mkCatTail(0), mkCatTail(1)];
+  SPR.catRun = [mkCatRun(0), mkCatRun(1)];
+  SPR.catEat = [mkCatEat(0), mkCatEat(1)];
+  // зеркальные версии кота (по умолчанию смотрит влево)
+  SPR.catRunR = SPR.catRun.map(flipH);
+  SPR.catEatR = SPR.catEat.map(flipH);
+}
+/* =====================================================================
+   ПИКСЕЛЬНЫЙ ШРИФТ 5×7 — кириллица, цифры, знаки. Нарисован в коде.
+   ===================================================================== */
+const FONT_DEF = {
+  'А': ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  'Б': ['#####', '#....', '#....', '####.', '#...#', '#...#', '####.'],
+  'В': ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
+  'Г': ['#####', '#....', '#....', '#....', '#....', '#....', '#....'],
+  'Д': ['..##.', '.#.#.', '.#.#.', '.#.#.', '.#.#.', '#####', '#...#'],
+  'Е': ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+  'Ё': ['.#.#.', '#####', '#....', '####.', '#....', '#....', '#####'],
+  'Ж': ['#.#.#', '#.#.#', '.###.', '..#..', '.###.', '#.#.#', '#.#.#'],
+  'З': ['.###.', '#...#', '....#', '..##.', '....#', '#...#', '.###.'],
+  'И': ['#...#', '#...#', '#..##', '#.#.#', '##..#', '#...#', '#...#'],
+  'Й': ['.#.#.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '#...#'],
+  'К': ['#...#', '#..#.', '#.#..', '##...', '#.#..', '#..#.', '#...#'],
+  'Л': ['..###', '.#..#', '.#..#', '.#..#', '#...#', '#...#', '#...#'],
+  'М': ['#...#', '##.##', '#.#.#', '#...#', '#...#', '#...#', '#...#'],
+  'Н': ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  'О': ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  'П': ['#####', '#...#', '#...#', '#...#', '#...#', '#...#', '#...#'],
+  'Р': ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
+  'С': ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
+  'Т': ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  'У': ['#...#', '#...#', '#...#', '.####', '....#', '#...#', '.###.'],
+  'Ф': ['..#..', '.###.', '#.#.#', '#.#.#', '.###.', '..#..', '..#..'],
+  'Х': ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
+  'Ц': ['#..#.', '#..#.', '#..#.', '#..#.', '#..#.', '#####', '....#'],
+  'Ч': ['#...#', '#...#', '#...#', '.####', '....#', '....#', '....#'],
+  'Ш': ['#.#.#', '#.#.#', '#.#.#', '#.#.#', '#.#.#', '#.#.#', '#####'],
+  'Щ': ['#.#.#', '#.#.#', '#.#.#', '#.#.#', '#.#.#', '#####', '....#'],
+  'Ъ': ['##...', '.#...', '.#...', '.###.', '.#..#', '.#..#', '.###.'],
+  'Ы': ['#...#', '#...#', '#...#', '##..#', '#.#.#', '#.#.#', '##..#'],
+  'Ь': ['#....', '#....', '#....', '####.', '#...#', '#...#', '####.'],
+  'Э': ['.###.', '#...#', '....#', '..###', '....#', '#...#', '.###.'],
+  'Ю': ['#..#.', '#.#.#', '#.#.#', '###.#', '#.#.#', '#.#.#', '#..#.'],
+  'Я': ['.####', '#...#', '#...#', '.####', '..#.#', '.#..#', '#...#'],
+  '0': ['.###.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '.###.'],
+  '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
+  '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
+  '3': ['.###.', '#...#', '....#', '..##.', '....#', '#...#', '.###.'],
+  '4': ['...#.', '..##.', '.#.#.', '#..#.', '#####', '...#.', '...#.'],
+  '5': ['#####', '#....', '####.', '....#', '....#', '#...#', '.###.'],
+  '6': ['.###.', '#....', '#....', '####.', '#...#', '#...#', '.###.'],
+  '7': ['#####', '....#', '...#.', '..#..', '.#...', '.#...', '.#...'],
+  '8': ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '.###.'],
+  '9': ['.###.', '#...#', '#...#', '.####', '....#', '....#', '.###.'],
+  '.': ['.', '.', '.', '.', '.', '.', '#'],
+  ',': ['..', '..', '..', '..', '..', '.#', '#.'],
+  ':': ['.', '.', '#', '.', '#', '.', '.'],
+  '!': ['#', '#', '#', '#', '#', '.', '#'],
+  '?': ['.###.', '#...#', '....#', '..##.', '..#..', '.....', '..#..'],
+  '-': ['.....', '.....', '.....', '#####', '.....', '.....', '.....'],
+  '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
+  '×': ['.....', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '.....'],
+  '/': ['....#', '....#', '...#.', '..#..', '.#...', '#....', '#....'],
+  '=': ['.....', '.....', '#####', '.....', '#####', '.....', '.....'],
+  '·': ['.', '.', '.', '#', '.', '.', '.'],
+  '←': ['.....', '..#..', '.#...', '#####', '.#...', '..#..', '.....'],
+  '→': ['.....', '..#..', '...#.', '#####', '...#.', '..#..', '.....'],
+  '↑': ['..#..', '.###.', '#.#.#', '..#..', '..#..', '..#..', '.....'],
+  '★': ['..#..', '..#..', '#####', '.###.', '.###.', '.#.#.', '#...#'],
+  ' ': ['...', '...', '...', '...', '...', '...', '...']
+};
+// Латинские буквы, совпадающие по форме с кириллическими
+const FONT_ALIAS = { A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х', x: '×' };
+
+const FONT_CACHE = {};
+function glyphCanvas(ch, color) {
+  const key = ch + color;
+  if (FONT_CACHE[key]) return FONT_CACHE[key];
+  const rows = FONT_DEF[ch];
+  if (!rows) return null;
+  const w = rows[0].length, c = mkCanvas(w, 7), x = c.getContext('2d');
+  x.fillStyle = color;
+  for (let j = 0; j < 7; j++) for (let i = 0; i < w; i++) if (rows[j][i] === '#') x.fillRect(i, j, 1, 1);
+  return (FONT_CACHE[key] = c);
+}
+function resolveGlyph(ch) {
+  if (FONT_DEF[ch]) return ch;
+  const up = ch.toUpperCase();
+  if (FONT_DEF[up]) return up;
+  if (FONT_ALIAS[ch]) return FONT_ALIAS[ch];
+  if (FONT_ALIAS[up]) return FONT_ALIAS[up];
+  return null;
+}
+function textWidth(str, scale) {
+  scale = scale || 1;
+  let w = 0;
+  for (const ch of str) { const g = resolveGlyph(ch); w += ((g ? FONT_DEF[g][0].length : 3) + 1) * scale; }
+  return Math.max(0, w - scale);
+}
+// Рисует строку; color — цвет из палитры (ключ) или css-строка; shadow — цвет тени (со смещением в 1 «пиксель»)
+function drawText(ctx, str, x, y, color, scale, shadow) {
+  scale = scale || 1;
+  const col = PAL[color] || color;
+  const sh = shadow ? (PAL[shadow] || shadow) : null;
+  for (const pass of sh ? [1, 0] : [0]) {
+    let cx = Math.round(x);
+    for (const ch of str) {
+      const g = resolveGlyph(ch);
+      if (!g) { cx += 4 * scale; continue; }
+      const cv = glyphCanvas(g, pass ? sh : col);
+      ctx.drawImage(cv, cx + (pass ? scale : 0), Math.round(y) + (pass ? scale : 0), cv.width * scale, cv.height * scale);
+      cx += (cv.width + 1) * scale;
+    }
+  }
+}
+function drawTextC(ctx, str, cx, y, color, scale, shadow) {
+  drawText(ctx, str, cx - textWidth(str, scale || 1) / 2, y, color, scale, shadow);
+}
+function pad(n, len) { return String(Math.max(0, Math.floor(n))).padStart(len, '0'); }
+/* =====================================================================
+   ЗВУК — чиптюн на Web Audio API. Ни одного файла: всё синтезируется.
+   Браузер разрешает звук только после нажатия клавиши, поэтому init()
+   вызывается из обработчика клавиатуры.
+   ===================================================================== */
+const Sound = (() => {
+  let ctx = null, master = null, sfxBus = null, musBus = null, noiseBuf = null, pulse25 = null;
+  let muted = false;
+  try { muted = localStorage.getItem('cook.muted') === '1'; } catch (e) { /* хранилище недоступно */ }
+
+  function init() {
+    if (ctx) { if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} } return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      ctx = new AC();
+      master = ctx.createGain(); master.gain.value = muted ? 0 : 0.5; master.connect(ctx.destination);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+      musBus = ctx.createGain(); musBus.gain.value = 0.55; musBus.connect(master);
+      const len = Math.floor(ctx.sampleRate * 0.5), buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      noiseBuf = buf;
+      // «пульс» 25% — фирменный тембр 8-битных приставок
+      const N = 32, re = new Float32Array(N), im = new Float32Array(N), duty = 0.25;
+      for (let n = 1; n < N; n++) {
+        re[n] = (2 / (n * Math.PI)) * Math.sin(n * Math.PI * duty);
+        im[n] = (2 / (n * Math.PI)) * (1 - Math.cos(n * Math.PI * duty));
+      }
+      pulse25 = ctx.createPeriodicWave(re, im);
+    } catch (e) { ctx = null; }
+  }
+
+  function tone(freq, dur, o) {
+    if (!ctx) return;
+    o = o || {};
+    const t0 = o.at !== undefined ? o.at : ctx.currentTime;
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    if (o.type === 'pulse' && pulse25) osc.setPeriodicWave(pulse25); else osc.type = (o.type === 'pulse' ? 'square' : o.type) || 'square';
+    osc.frequency.setValueAtTime(freq, t0);
+    if (o.slideTo) osc.frequency.exponentialRampToValueAtTime(o.slideTo, t0 + dur);
+    const v = o.vol !== undefined ? o.vol : 0.15;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(v, t0 + 0.006);
+    if (o.hold) { g.gain.setValueAtTime(v, t0 + dur * 0.72); g.gain.linearRampToValueAtTime(0.0001, t0 + dur); }
+    else g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g); g.connect(o.bus || sfxBus);
+    osc.start(t0); osc.stop(t0 + dur + 0.03);
+  }
+  function noise(dur, o) {
+    if (!ctx || !noiseBuf) return;
+    o = o || {};
+    const t0 = o.at !== undefined ? o.at : ctx.currentTime;
+    const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    src.buffer = noiseBuf;
+    f.type = o.filter || 'highpass'; f.frequency.value = o.freq || 3000;
+    g.gain.setValueAtTime(o.vol || 0.1, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(f); f.connect(g); g.connect(o.bus || sfxBus);
+    src.start(t0, Math.random() * 0.15); src.stop(t0 + dur + 0.03);
+  }
+  function seq(freqs, gap, o) {
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    freqs.forEach((f, i) => tone(f, (o && o.len) || gap * 1.4, Object.assign({}, o, { at: t + i * gap })));
+  }
+  function safe(fn) { return function () { if (!ctx || muted) return; try { fn.apply(null, arguments); } catch (e) { console.debug('Звук: ошибка эффекта', e); } }; }
+
+  const sfx = {
+    toss: safe(() => tone(420, 0.09, { slideTo: 900, vol: 0.10 })),
+    catch: safe((perfect, combo) => {
+      const b = 660 + Math.min(combo || 0, 14) * 28, t = ctx.currentTime;
+      tone(b, 0.07, { vol: 0.14 });
+      tone(b * 1.5, 0.12, { vol: 0.12, at: t + 0.06 });
+      noise(0.14, { freq: 5500, vol: 0.05 });          // шипение сковородки
+      if (perfect) tone(b * 2, 0.14, { type: 'triangle', vol: 0.14, at: t + 0.13 });
+    }),
+    drop: safe(() => tone(280, 0.38, { type: 'sawtooth', slideTo: 55, vol: 0.12 })),
+    meow: safe(() => {
+      const t = ctx.currentTime;
+      tone(680, 0.13, { type: 'triangle', slideTo: 980, vol: 0.17, at: t });
+      tone(980, 0.28, { type: 'triangle', slideTo: 520, vol: 0.17, at: t + 0.12 });
+    }),
+    chomp: safe(() => noise(0.06, { filter: 'lowpass', freq: 900, vol: 0.2 })),
+    level: safe(() => seq([523, 659, 784, 1047, 1319], 0.085, { vol: 0.12 })),
+    life: safe(() => seq([784, 988, 1175, 1568], 0.08, { vol: 0.12, type: 'triangle' })),
+    start: safe(() => seq([392, 523, 659, 784, 1047], 0.09, { vol: 0.12 })),
+    over: safe(() => seq([392, 370, 349, 330, 262, 196], 0.17, { vol: 0.14, type: 'triangle', len: 0.3 })),
+    bell: safe(() => { const t = ctx.currentTime; tone(1568, 0.12, { type: 'triangle', vol: 0.12, at: t }); tone(1175, 0.24, { type: 'triangle', vol: 0.12, at: t + 0.12 }); }),
+    bump: safe(() => {
+      noise(0.16, { filter: 'lowpass', freq: 700, vol: 0.3 });
+      tone(190, 0.3, { type: 'sawtooth', slideTo: 45, vol: 0.14 });
+      noise(0.25, { freq: 6000, vol: 0.06, at: ctx.currentTime + 0.05 });     // звон посуды
+    }),
+    pick: safe((streak) => { const b = 780 + Math.min(streak || 0, 20) * 24, t = ctx.currentTime; tone(b, 0.06, { vol: 0.12 }); tone(b * 1.5, 0.1, { vol: 0.11, at: t + 0.05 }); }),
+    jump: safe(() => tone(330, 0.16, { slideTo: 720, vol: 0.1 })),
+    swing: safe(() => noise(0.13, { filter: 'bandpass', freq: 1800, vol: 0.14 })),
+    squash: safe(() => { tone(240, 0.14, { slideTo: 60, vol: 0.13 }); noise(0.08, { filter: 'lowpass', freq: 1200, vol: 0.18 }); }),
+    harvest: safe(() => seq([392, 494, 587, 784, 988], 0.08, { vol: 0.11, type: 'triangle' })),
+    done: safe(() => seq([523, 659, 784, 1047, 784, 1047, 1319, 1568], 0.09, { vol: 0.12 })),
+    blip: safe(() => { tone(500, 0.05, { vol: 0.1 }); tone(750, 0.07, { vol: 0.1, at: ctx.currentTime + 0.05 }); })
+  };
+
+  /* ---------- Музыка: весёлая полька на две дорожки + «хэт» ---------- */
+  const SEMI = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  function midi(n) { const m = /^([A-G])(#|b)?(\d)$/.exec(n); return 12 * (+m[3] + 1) + SEMI[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0); }
+  function hz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+  function prepTrack(melRows, bass) {                 // разбираем мелодию: '-' продлевает ноту, '.' — пауза
+    const mel = melRows.join(' ').split(' '), leadAt = {};
+    mel.forEach((tok, i, arr) => {
+      if (tok === '.' || tok === '-') return;
+      let len = 1; while (arr[i + len] === '-') len++;
+      leadAt[i] = { m: midi(tok), len };
+    });
+    return { len: mel.length, leadAt, bass };
+  }
+  const TRACKS = [
+    prepTrack([                                       // 0: кухня — весёлая полька
+      'E5 - G5 E5 C5 E5 G5 -', 'A5 - G5 E5 C5 D5 E5 -', 'F5 - A5 F5 C5 F5 A5 -', 'G5 - E5 C5 D5 . G4 .',
+      'D5 - G5 D5 B4 D5 G5 -', 'B5 - A5 G5 F5 E5 D5 -', 'E5 - G5 E5 C5 E5 G5 C6', 'B5 A5 G5 F5 E5 . C5 .'
+    ], [['C3', 'G3'], ['C3', 'G3'], ['F2', 'C3'], ['C3', 'G3'], ['G2', 'D3'], ['G2', 'D3'], ['C3', 'G3'], ['G2', 'C3']]),
+    prepTrack([                                       // 1: огород — бодрая прогулка
+      'D5 - G5 - B5 G5 D5 -', 'E5 - G5 - B5 G5 E5 -', 'C5 - E5 - G5 E5 C5 -', 'D5 - F#5 - A5 F#5 D5 -',
+      'B5 - A5 G5 B5 - D6 -', 'B5 - G5 E5 G5 - B5 -', 'A5 - C6 - B5 A5 G5 -', 'F#5 A5 D6 A5 F#5 - D5 .'
+    ], [['G2', 'D3'], ['E2', 'B2'], ['C3', 'G3'], ['D3', 'A3'], ['G2', 'D3'], ['E2', 'B2'], ['A2', 'E3'], ['D3', 'A3']])
+  ];
+  let T = TRACKS[0];
+  let step = 0, next = 0, timer = null, playing = false, bpm = 132;
+  function stepDur() { return 60 / bpm / 2; }
+  function schedule(i, t) {
+    const sd = stepDur(), e = T.leadAt[i];
+    if (e) tone(hz(e.m), e.len * sd * 0.94, { type: 'pulse', vol: 0.075, at: t, bus: musBus, hold: true });
+    if (i % 2 === 0) {
+      const n = T.bass[i >> 3][(i >> 1) & 1];
+      tone(hz(midi(n)), sd * 1.8, { type: 'triangle', vol: 0.2, at: t, bus: musBus, hold: true });
+    } else noise(0.03, { freq: 7500, vol: 0.035, at: t, bus: musBus });
+  }
+  function pump() {
+    if (!ctx) return;
+    if (next < ctx.currentTime) next = ctx.currentTime + 0.05;
+    while (next < ctx.currentTime + 0.2) { schedule(step, next); next += stepDur(); step = (step + 1) % T.len; }
+  }
+  const music = {
+    start() { if (!ctx || playing) return; playing = true; next = ctx.currentTime + 0.08; timer = setInterval(pump, 40); },
+    rewind() { step = 0; },
+    stop() { playing = false; if (timer) { clearInterval(timer); timer = null; } },
+    tempo(b) { bpm = b; },
+    track(n) { T = TRACKS[n] || TRACKS[0]; step = 0; },
+    get on() { return playing; }
+  };
+
+  function setMuted(m) {
+    muted = m;
+    try { localStorage.setItem('cook.muted', m ? '1' : '0'); } catch (e) {}
+    if (master) master.gain.setTargetAtTime(m ? 0 : 0.5, ctx.currentTime, 0.02);
+  }
+  return {
+    init, sfx, music,
+    get muted() { return muted; },
+    toggleMute() { setMuted(!muted); return muted; },
+    get ready() { return !!ctx; },
+    get state() { return ctx ? ctx.state : 'нет'; }
+  };
+})();
+/* =====================================================================
+   ДЕКОРАЦИИ: кухня в пикселях + рамка старого телевизора
+   ===================================================================== */
+function pxLine(c, x0, y0, x1, y1, col) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  c.fillStyle = PAL[col] || col;
+  for (;;) {
+    c.fillRect(x0, y0, 1, 1);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function pxDisc(c, cx, cy, r, col) {
+  c.fillStyle = PAL[col] || col;
+  for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r + r * 0.6) c.fillRect(cx + x, cy + y, 1, 1);
+}
+
+const WINDOW_PANES = [[17, 25, 14, 17], [33, 25, 14, 17], [17, 45, 14, 17], [33, 45, 14, 17]];
+
+// Статичная часть кухни рисуется один раз
+function buildBackground() {
+  const c = mkCanvas(VW, VH), x = c.getContext('2d');
+  const R = (col, X, Y, W, H) => { x.fillStyle = PAL[col]; x.fillRect(X, Y, W, H); };
+
+  // Стена: голубая плитка
+  R('B', 0, 0, VW, 138);
+  for (let ty = 0; ty < 138; ty += 12) for (let tx = 0; tx < VW; tx += 14) {
+    R('v', tx + 13, ty, 1, 12); R('v', tx, ty + 11, 14, 1);
+    R('V', tx + 1, ty + 1, 3, 1); R('V', tx + 1, ty + 2, 1, 1);
+  }
+
+  // Окно: рама, четыре стекла, солнце, подоконник, занавеска
+  R('k', 12, 21, 40, 47); R('w', 13, 22, 38, 45); R('l', 13, 65, 38, 2);
+  for (const [px, py, pw, ph] of WINDOW_PANES) { R('k', px - 1, py - 1, pw + 2, ph + 2); R('V', px, py, pw, ph); }
+  pxDisc(x, 41, 33, 4, 'o'); pxDisc(x, 41, 33, 3, 'y');                 // солнце
+  R('k', 10, 67, 44, 1); R('l', 10, 68, 44, 2); R('f', 10, 70, 44, 1); R('k', 10, 71, 44, 1);
+  R('R', 11, 18, 42, 4); for (let i = 12; i < 52; i += 4) R('w', i, 19, 2, 2);      // ламбрекен
+  R('k', 11, 22, 42, 1);
+  // горшок с цветком на подоконнике
+  R('k', 38, 61, 10, 7); R('r', 39, 62, 8, 5); R('R', 39, 62, 8, 2);
+  R('g', 41, 55, 4, 6); R('G', 39, 54, 3, 4); R('G', 45, 55, 3, 4); R('y', 42, 52, 3, 3); R('k', 41, 51, 5, 1);
+
+  // Часы (стрелки — в анимации)
+  pxDisc(x, 240, 31, 11, 'k'); pxDisc(x, 240, 31, 10, 'w'); pxDisc(x, 240, 31, 8, 'w');
+  for (const [tx, ty] of [[240, 23], [240, 39], [232, 31], [248, 31]]) R('k', tx - 1, ty - 1, 2, 2);
+  R('f', 231, 40, 18, 1);
+
+  // Рейка с кухонной утварью
+  R('k', 203, 49, 68, 4); R('c', 204, 50, 66, 2); R('C', 204, 50, 66, 1);
+  // половник
+  R('k', 211, 53, 4, 20); R('s', 212, 53, 2, 18); pxDisc(x, 213, 74, 4, 'k'); pxDisc(x, 213, 74, 3, 'f');
+  // лопатка
+  R('k', 227, 53, 4, 14); R('c', 228, 53, 2, 12); R('k', 224, 66, 10, 10); R('f', 225, 67, 8, 8); R('s', 227, 69, 1, 4); R('s', 230, 69, 1, 4);
+  // венчик
+  R('k', 246, 53, 4, 10); R('c', 247, 53, 2, 8);
+  for (const off of [0, 3, 6]) { R('k', 243 + off, 63, 1, 10); }
+  R('k', 244, 62, 8, 1); R('f', 245, 64, 1, 8); R('f', 248, 64, 1, 8); R('f', 251, 64, 1, 8); R('k', 244, 73, 9, 1);
+  // маленькая сковородка
+  R('k', 263, 53, 4, 10); R('c', 264, 53, 2, 8); pxDisc(x, 265, 71, 7, 'k'); pxDisc(x, 265, 71, 6, 's'); pxDisc(x, 265, 71, 4, 'n');
+
+  // Столешница
+  R('k', 0, 111, VW, 1); R('l', 0, 112, VW, 3); R('f', 0, 115, VW, 1); R('k', 0, 116, VW, 1);
+  // Шкафчики
+  R('C', 0, 117, VW, 21);
+  for (let i = 0; i < 5; i++) {
+    const dx = i * 56;
+    R('c', dx, 117, 1, 21); R('c', dx + 55, 117, 1, 21);
+    R('k', dx + 5, 120, 46, 15); R('c', dx + 6, 121, 44, 13); R('C', dx + 7, 122, 42, 11); R('y', dx + 7, 122, 42, 1);
+    R('k', dx + 43, 126, 5, 6); R('y', dx + 44, 127, 3, 4);
+  }
+  R('k', 0, 137, VW, 1); R('c', 0, 138, VW, 2); R('k', 0, 140, VW, 1);
+
+  // Пол: шахматка
+  for (let ty = 141, row = 0; ty < VH; ty += 10, row++)
+    for (let tx = 0; tx < VW; tx += 20) R(((tx / 20 + row) % 2) ? 'f' : 'l', tx, ty, 20, 10);
+  R('s', 0, 141, VW, 1);
+
+  // Кастрюли на столешнице
+  R('k', 8, 92, 30, 19); R('s', 9, 93, 28, 18); R('f', 11, 95, 2, 12); R('n', 9, 106, 28, 5);
+  R('k', 12, 88, 22, 5); R('f', 13, 89, 20, 3); R('k', 20, 84, 6, 4); R('s', 21, 85, 4, 2);
+  R('k', 4, 96, 5, 4); R('s', 5, 97, 4, 2); R('k', 37, 96, 5, 4); R('s', 37, 97, 4, 2);
+  R('k', 39, 99, 24, 12); R('R', 40, 100, 22, 11); R('r', 40, 106, 22, 5); R('w', 42, 102, 2, 6);
+  R('k', 41, 95, 20, 5); R('f', 42, 96, 18, 3); R('k', 49, 92, 4, 3); R('s', 50, 93, 2, 1);
+
+  // Разделочная доска, хлеб, помидор, нож
+  R('k', 211, 107, 36, 4); R('C', 212, 108, 34, 2); R('c', 212, 110, 34, 1);
+  R('k', 213, 99, 22, 9); R('o', 215, 100, 18, 7); R('y', 217, 100, 14, 2); R('C', 215, 105, 18, 2);
+  for (const bx of [219, 224, 229]) R('C', bx, 101, 1, 3);
+  pxDisc(x, 240, 104, 4, 'k'); pxDisc(x, 240, 104, 3, 'R'); R('g', 238, 99, 5, 2); R('w', 238, 102, 1, 1);
+  R('k', 247, 108, 12, 3); R('l', 248, 109, 8, 1); R('c', 256, 108, 3, 3);
+
+  // Банка с половниками справа
+  R('k', 257, 93, 16, 18); R('V', 258, 94, 14, 16); R('w', 259, 95, 2, 12); R('f', 258, 108, 14, 2);
+  for (const [ux, uh, col] of [[261, 12, 'c'], [265, 16, 'c'], [269, 10, 'C']]) { R('k', ux - 1, 93 - uh, 4, uh); R(col, ux, 93 - uh, 2, uh); }
+  R('k', 258, 101, 14, 1);
+  return c;
+}
+
+// Анимированные детали кухни: облака, стрелки часов, пар
+function drawScene(c, t) {
+  c.drawImage(BG, 0, 0);
+  // облака в окне
+  c.save();
+  c.beginPath(); for (const p of WINDOW_PANES) c.rect(p[0], p[1], p[2], p[3]); c.clip();
+  c.fillStyle = PAL.w;
+  const cx = 8 + ((t * 2.5) % 56), cx2 = 50 - ((t * 1.6) % 56);
+  c.fillRect(cx + 2, 28, 6, 2); c.fillRect(cx, 30, 12, 3); c.fillRect(cx + 4, 26, 4, 2);
+  c.fillRect(cx2 + 1, 50, 5, 2); c.fillRect(cx2, 52, 9, 2);
+  c.restore();
+  // часы — показывают настоящее время
+  const d = new Date(), mn = d.getMinutes() + d.getSeconds() / 60, hr = (d.getHours() % 12) + mn / 60;
+  const am = mn / 60 * Math.PI * 2, ah = hr / 12 * Math.PI * 2;
+  pxLine(c, 240, 31, 240 + Math.sin(ah) * 4, 31 - Math.cos(ah) * 4, 'k');
+  pxLine(c, 240, 31, 240 + Math.sin(am) * 7, 31 - Math.cos(am) * 7, 'k');
+  c.fillStyle = PAL.R; c.fillRect(240, 31, 1, 1);
+  // пар над кастрюлями
+  c.fillStyle = PAL.w;
+  for (const [px, py, ph] of [[22, 84, 0], [27, 84, 0.5], [50, 92, 0.25], [55, 92, 0.75]]) {
+    const p = ((t * 0.5) + ph) % 1;
+    c.globalAlpha = 0.8 * (1 - p);
+    const s = p < 0.5 ? 2 : 3;
+    c.fillRect(px + Math.round(Math.sin(p * 7 + ph * 9) * 3), py - Math.round(p * 24), s, s);
+  }
+  c.globalAlpha = 1;
+}
+
+/* ---------- Рамка телевизора, скан-линии, виньетка, блик ---------- */
+function rrPath(c, x, y, w, h, r) {
+  c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.arcTo(x + w, y, x + w, y + r, r);
+  c.lineTo(x + w, y + h - r); c.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c.lineTo(x + r, y + h); c.arcTo(x, y + h, x, y + h - r, r);
+  c.lineTo(x, y + r); c.arcTo(x, y, x + r, y, r); c.closePath();
+}
+function buildTvOverlay() {
+  const c = mkCanvas(CW, CH), x = c.getContext('2d');
+  // тёмный пластиковый корпус с вырезом под экран
+  x.beginPath(); rrPath(x, 0, 0, CW, CH, 46); rrPath(x, SX, SY, SW, SH, 24);
+  const g = x.createLinearGradient(0, 0, 0, CH);
+  g.addColorStop(0, '#2d2b3b'); g.addColorStop(0.5, '#1b1926'); g.addColorStop(1, '#0d0c14');
+  x.fillStyle = g; x.fill('evenodd');
+  // блик на кромке корпуса
+  x.beginPath(); rrPath(x, 1.5, 1.5, CW - 3, CH - 3, 45);
+  const hg = x.createLinearGradient(0, 0, CW, CH);
+  hg.addColorStop(0, 'rgba(255,255,255,.24)'); hg.addColorStop(0.5, 'rgba(255,255,255,.04)'); hg.addColorStop(1, 'rgba(0,0,0,.4)');
+  x.strokeStyle = hg; x.lineWidth = 3; x.stroke();
+  // фаска вокруг экрана
+  x.beginPath(); rrPath(x, SX - 1, SY - 1, SW + 2, SH + 2, 25); x.strokeStyle = '#000'; x.lineWidth = 4; x.stroke();
+  x.beginPath(); rrPath(x, SX - 6, SY - 6, SW + 12, SH + 12, 30); x.strokeStyle = 'rgba(255,255,255,.07)'; x.lineWidth = 2; x.stroke();
+  // ручки, светодиод, надпись на нижней рамке
+  for (const kx of [786, 818]) {
+    const rg = x.createRadialGradient(kx - 2, 583, 1, kx, 586, 9);
+    rg.addColorStop(0, '#5b5972'); rg.addColorStop(1, '#171621');
+    x.fillStyle = rg; x.beginPath(); x.arc(kx, 586, 8, 0, Math.PI * 2); x.fill();
+    x.strokeStyle = 'rgba(0,0,0,.6)'; x.lineWidth = 1; x.stroke();
+    x.fillStyle = 'rgba(255,255,255,.55)'; x.fillRect(kx - 1, 579, 2, 5);
+  }
+  const lg = x.createRadialGradient(852, 586, 1, 852, 586, 12);
+  lg.addColorStop(0, 'rgba(255,90,74,.75)'); lg.addColorStop(1, 'rgba(255,90,74,0)');
+  x.fillStyle = lg; x.fillRect(838, 572, 28, 28);
+  x.fillStyle = '#ff6a58'; x.beginPath(); x.arc(852, 586, 3.2, 0, Math.PI * 2); x.fill();
+  x.imageSmoothingEnabled = false;
+  drawText(x, 'ВЕСЁЛЫЙ ПОВАР', 50, 579, '#6c6a88', 2);
+  // эффекты «стекла» — только внутри экрана
+  x.save(); x.beginPath(); rrPath(x, SX, SY, SW, SH, 24); x.clip();
+  x.fillStyle = 'rgba(0,0,0,0.17)';                      // лёгкие скан-линии: тёмная полоска в каждой третьей строке
+  for (let y = SY + 2; y < SY + SH; y += 3) x.fillRect(SX, y, SW, 1);
+  const vg = x.createRadialGradient(CW / 2, CH / 2, 200, CW / 2, CH / 2, 560);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.5)');
+  x.fillStyle = vg; x.fillRect(SX, SY, SW, SH);          // виньетка
+  const gg = x.createRadialGradient(SX + 180, SY + 90, 10, SX + 180, SY + 90, 320);
+  gg.addColorStop(0, 'rgba(255,255,255,.08)'); gg.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = gg; x.fillRect(SX, SY, SW, SH);          // блик
+  x.restore();
+  return c;
+}
+/* =====================================================================
+   ВЕСЁЛЫЙ ПОВАР — игровая логика
+   Повар подбрасывает еду сковородкой. Лови её, пока не упала на пол:
+   упавшее съест кот. Три промаха — конец игры.
+   ===================================================================== */
+
+/* ---------------------------- Константы ---------------------------- */
+const VW = 280, VH = 180;                 // логическое разрешение (×3 = 840×540)
+const CW = 900, CH = 600;                 // размер canvas
+const SX = 30, SY = 30, SW = 840, SH = 540; // экран телевизора внутри рамки
+const STEP = 1 / 60;                      // фиксированный шаг логики
+const HUD_H = 12;
+
+const FLOOR_Y = 168;      // подошвы повара
+const CAT_Y = 177;        // лапы кота
+const PAN_Y = 158;        // центр сковородки
+const CATCH_Y = 151;      // на этой высоте еда «садится» на сковородку
+const FOOD_FLOOR = 172;   // сюда падает еда, если её не поймали
+const PAN_DX = 29;        // сковородка относительно корпуса повара
+const CATCH_HALF = 14;    // полуширина зоны ловли
+const COOK_MIN = 16, COOK_MAX = 264, COOK_SPEED = 150;
+const CAT_HOME = 252;
+const MIN_GAP = 0.3;      // минимальный интервал между приземлениями
+const BUMP_DIST = 18;     // ближе этого повар и официант сталкиваются
+const SAFE_DIST = 26;     // такую дистанцию до официантов держит расписание еды
+const WARN_T = 1.3;       // за сколько секунд предупреждаем о выходе официанта
+const ZONE_M = 38;        // запас вокруг места, где стоит официант: сюда еда не приземляется
+const GROUND_Y = 152;     // огород: линия земли, по ней ходит повар
+const HARVEST_GOAL = 30;  // сколько продуктов нужно собрать на огороде
+const COMBO_AT = 10;      // серия из стольких продуктов подряд даёт ×2
+const WALK_V = 90, JUMP_V = 210, GRAV = 560;   // огород: скорость ходьбы, сила прыжка, тяжесть
+const REDUCE_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const tv = document.getElementById('tv');
+const ctx = tv.getContext('2d');
+const buf = mkCanvas(VW, VH);             // низкое разрешение — сюда рисуется весь мир
+const bx = buf.getContext('2d');
+let BG = null, TV = null;
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const rnd = (a, b) => a + Math.random() * (b - a);
+const rndi = (a, b) => Math.floor(rnd(a, b + 1));
+
+/* ------------------------------ Состояние ------------------------------ */
+function loadHi() { try { return parseInt(localStorage.getItem('cook.hi') || '0', 10) || 0; } catch (e) { return 0; } }
+function saveHi(v) { try { localStorage.setItem('cook.hi', String(v)); } catch (e) { /* без сохранения */ } }
+
+const cook = { x: 140, off: PAN_DX, face: 1, walkT: 0, moving: false, flick: 0, stun: 0, knockT: 0, kdir: 1, iframes: 0 };
+const cat = { x: CAT_HOME, dir: -1, state: 'idle', target: null, eatT: 0, chompT: 0, anim: 0 };
+const G = {
+  state: 'title',            // title | play | paused | over
+  time: 0, score: 0, hi: loadHi(), lives: 3, level: 1, catches: 0, nextLevelAt: 8,
+  combo: 0, nextLife: 1500, readyT: 0, spawnCd: 0, shake: 0, overT: 0, newRecord: false,
+  toast: null, auto: false, foods: [], parts: [], pops: [], waiters: [], waiterCd: 0, waiterHint: 0, resume: 'play', fade: null, noPenalty: false
+};
+
+/* ------------------------------ Сложность ------------------------------ */
+const LV_T = [2.4, 2.4, 2.2, 2.4, 2.2, 2.0, 2.2, 2.0, 1.8, 2.0];   // время полёта еды
+const LV_N = [1, 2, 2, 3, 3, 3, 4, 4, 4, 5];                        // сколько кусков в воздухе
+function levelParams(L) {
+  if (G.state === 'title') return { n: 2, T: 1.9, frac: 0.45, Hmin: 70, Hmax: 100 };   // демо на заставке
+  const i = Math.min(L, 10) - 1;
+  return {
+    n: LV_N[i],
+    T: L <= 10 ? LV_T[i] : Math.max(1.75, 2.0 - 0.03 * (L - 10)),
+    frac: Math.min(0.85, 0.34 + 0.045 * (L - 1)),   // какую долю скорости повара требует расписание
+    Hmin: 92, Hmax: 128
+  };
+}
+function catchesPerLevel(L) { return 8 + 2 * L; }
+
+/* ------------------------------ Еда ------------------------------ */
+// Подбираем точку и время приземления так, чтобы повар успевал добежать
+// до каждого куска (никаких «невозможных» ситуаций), но не слишком легко.
+function planToss(x0, self, lp) {
+  const now = G.time, vmax = COOK_SPEED * lp.frac;
+  const others = G.foods.filter(f => f !== self && f.state === 'air' && !f.missed).map(f => ({ t: f.landAt, x: f.landX }));
+  let best = null, bestScore = Infinity;
+  for (let i = 0; i < 80; i++) {
+    const T = lp.T * rnd(0.86, 1.14);
+    const [lo, hi] = waiterFree(now + T, 24, 256);             // пока официант на кухне, часть пола занята
+    const okRange = lo <= hi, a = okRange ? lo : 24, b = okRange ? hi : 256;
+    const xt = i < 40 ? rnd(a, b) : clamp(x0 + rnd(-70, 70), a, b);
+    const evs = [{ t: now, x: x0 }].concat(others, [{ t: now + T, x: xt }]).sort((a, b) => a.t - b.t);
+    let worst = 0, crowded = false, blocked = 0;
+    for (let j = 1; j < evs.length; j++) {
+      const gap = evs[j].t - evs[j - 1].t, d = Math.abs(evs[j].x - evs[j - 1].x);
+      if (gap < MIN_GAP && d > 12) crowded = true;
+      worst = Math.max(worst, d / Math.max(gap, 0.05));
+      if (G.waiters.length && !pathClear(G.waiters, evs[j - 1].t, evs[j - 1].x, evs[j].t, evs[j].x)) blocked++;   // на пути стоит официант
+    }
+    const score = worst + (crowded ? 1000 : 0) + blocked * 500 + (okRange ? 0 : 800);
+    if (score <= vmax) return { T, x: xt, H: rnd(lp.Hmin, lp.Hmax) };
+    if (score < bestScore) { bestScore = score; best = { T, x: xt, H: rnd(lp.Hmin, lp.Hmax) }; }
+  }
+  return best;
+}
+function launch(f, x0) {
+  const p = planToss(x0, f, levelParams(G.level));
+  f.x0 = x0; f.y0 = CATCH_Y; f.T = p.T; f.vx = (p.x - x0) / p.T;
+  f.g = 8 * p.H / (p.T * p.T); f.v0 = 4 * p.H / p.T;      // парабола: вершина H, приземление ровно через T
+  f.t = 0; f.x = x0; f.y = CATCH_Y; f.state = 'air'; f.missed = false;
+  f.landX = p.x; f.landAt = G.time + p.T;
+  f.spinDir = Math.random() < 0.5 ? 1 : -1;
+}
+function spawnFood() {
+  const f = { type: rndi(0, SPR.foods.length - 1), x: cook.x, y: CATCH_Y, x0: cook.x, y0: CATCH_Y, vx: 0, v0: 0, g: 0, T: 1, t: 0, landX: cook.x, landAt: 0, state: 'air', missed: false, rot: 0, spinDir: 1 };
+  G.foods.push(f);
+  launch(f, cook.x);
+  cook.flick = 0.16;
+  sparkle(cook.x, CATCH_Y + 2, false);
+  Sound.sfx.toss();
+}
+function onCatch(f) {
+  const perfect = Math.abs(f.x - cook.x) <= 3;
+  cook.flick = 0.16;
+  sparkle(f.x, CATCH_Y + 2, perfect);
+  if (G.state === 'play') {
+    G.combo++; G.catches++;
+    const mult = Math.min(5, 1 + Math.floor(G.combo / 10));
+    const pts = (SPR.foods[f.type].pts + (perfect ? 5 : 0)) * mult;
+    addScore(pts);
+    pop(f.x, CATCH_Y - 10, '+' + pts, perfect ? 'y' : 'w');
+    Sound.sfx.catch(perfect, G.combo);
+    if (G.combo % 10 === 0) toast('КОМБО ×' + mult + '!');
+    if (G.catches >= G.nextLevelAt) levelUp();
+  }
+  launch(f, f.x);
+}
+function onFloor(f) {
+  f.state = 'floor'; f.y = FOOD_FLOOR; f.rot = 0;
+  dust(f.x, FOOD_FLOOR + 4);
+  if (G.state !== 'play' || G.noPenalty) return;
+  G.lives--; G.combo = 0;
+  if (!REDUCE_MOTION) G.shake = 0.3;
+  G.spawnCd = Math.max(G.spawnCd, 1.1);
+  pop(f.x, FOOD_FLOOR - 14, 'ОЙ!', 'R');
+  Sound.sfx.drop();
+  if (G.lives <= 0) gameOver();
+}
+function addScore(pts) {
+  G.score += pts;
+  if (G.score > G.hi) { G.hi = G.score; G.newRecord = true; }
+  while (G.score >= G.nextLife) {          // каждые 1000 очков — дополнительная жизнь (не больше пяти)
+    G.nextLife += 1000;
+    if (G.lives < 5) { G.lives++; toast('+1 ЖИЗНЬ!'); Sound.sfx.life(); }
+  }
+}
+
+/* ------------------------------ Эффекты ------------------------------ */
+function sparkle(x, y, perfect) {
+  const n = perfect ? 12 : 6;
+  for (let i = 0; i < n; i++) G.parts.push({ x, y, vx: rnd(-45, 45), vy: rnd(-95, -25), life: rnd(0.25, 0.5), col: perfect ? (Math.random() < 0.5 ? 'y' : 'w') : (Math.random() < 0.5 ? 'w' : 'l'), s: Math.random() < 0.3 ? 2 : 1 });
+}
+function dust(x, y) { for (let i = 0; i < 8; i++) G.parts.push({ x, y, vx: rnd(-55, 55), vy: rnd(-45, -8), life: rnd(0.25, 0.5), col: Math.random() < 0.5 ? 'l' : 'f', s: 2 }); }
+function confetti() {
+  const cols = ['R', 'y', 'G', 'B', 'P', 'o'];
+  for (let i = 0; i < 26; i++) G.parts.push({ x: rnd(20, 260), y: rnd(14, 26), vx: rnd(-25, 25), vy: rnd(5, 45), life: rnd(0.9, 1.5), col: cols[rndi(0, cols.length - 1)], s: 2 });
+}
+function pop(x, y, text, col) { G.pops.push({ x, y, text, col, life: 0.9 }); }
+function toast(text, y) { G.toast = { text, y: y || 56, life: 1.5 }; }
+
+/* ------------------------------ Управление ------------------------------ */
+const down = new Set();
+let lastH = 0;
+function inputDir() {
+  const l = down.has('ArrowLeft') || down.has('KeyA'), r = down.has('ArrowRight') || down.has('KeyD');
+  if (l && r) return lastH;
+  return r ? 1 : l ? -1 : 0;
+}
+const PREVENT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'PageUp', 'PageDown', 'Home', 'End']);
+function codeOf(e) {
+  if (e.code) return e.code;
+  return ({ ArrowLeft: 'ArrowLeft', Left: 'ArrowLeft', ArrowRight: 'ArrowRight', Right: 'ArrowRight', ArrowUp: 'ArrowUp', Up: 'ArrowUp',
+    ArrowDown: 'ArrowDown', Down: 'ArrowDown', ' ': 'Space', Enter: 'Enter', Escape: 'Escape', p: 'KeyP', P: 'KeyP', m: 'KeyM', M: 'KeyM', a: 'KeyA', A: 'KeyA', d: 'KeyD', D: 'KeyD' })[e.key] || e.key;
+}
+window.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const code = codeOf(e);
+  if (PREVENT.has(code)) e.preventDefault();      // стрелки и пробел не должны прокручивать страницу
+  if (e.repeat) return;
+  Sound.init();                                    // звук можно включать только после действия пользователя
+  down.add(code);
+  if (code === 'ArrowLeft' || code === 'KeyA') lastH = -1;
+  if (code === 'ArrowRight' || code === 'KeyD') lastH = 1;
+  onPress(code);
+}, { passive: false });
+window.addEventListener('keyup', e => {
+  const code = codeOf(e);
+  if (PREVENT.has(code)) e.preventDefault();
+  down.delete(code);
+});
+window.addEventListener('blur', () => { down.clear(); pauseGame(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { down.clear(); pauseGame(); } });
+
+function onPress(code) {
+  if (code === 'KeyM') {
+    const m = Sound.toggleMute();
+    toast(m ? 'ЗВУК: ВЫКЛ' : 'ЗВУК: ВКЛ', G.state === 'play' || G.state === 'paused' || G.state === 'harvest' ? 56 : 150);
+    if (!m) Sound.sfx.blip();
+    return;
+  }
+  const go = code === 'Space' || code === 'Enter', pz = code === 'KeyP' || code === 'Escape';
+  if (G.state === 'title') { if (go) startGame(); }
+  else if (G.state === 'over') { if (go && G.overT <= 0) startGame(); }
+  else if (G.state === 'play') { if (pz) pauseGame(); }
+  else if (G.state === 'harvest') { if (pz) pauseGame(); else harvestPress(code); }
+  else if (G.state === 'paused') { if (pz || go) resumeGame(); }
+}
+
+/* ------------------------------ Официанты ------------------------------ */
+// Официант выходит из-за края кухни, идёт вглубь, стоит с подносом («заказ!») и уходит обратно.
+// Его путь известен заранее, поэтому расписание полёта еды заранее обходит этот путь:
+// столкнуться с официантом можно только по собственной невнимательности.
+function waiterLife(w) { return 2 * w.dIn / w.v + w.S; }
+function waiterX(w, tau) {                 // положение по «личному» времени официанта (до выхода tau < 0)
+  const tIn = w.dIn / w.v;
+  if (tau <= 0 || tau >= 2 * tIn + w.S) return w.xEdge;
+  if (tau < tIn) return w.xEdge + w.inward * w.v * tau;
+  if (tau < tIn + w.S) return w.xEdge + w.inward * w.dIn;
+  return w.xEdge + w.inward * (w.dIn - w.v * (tau - tIn - w.S));
+}
+function waiterAt(w, t) {                  // где официант будет в момент t (null — его там ещё нет или уже нет)
+  const tau = w.tau + (t - G.time);
+  return tau <= 0 || tau >= waiterLife(w) ? null : waiterX(w, tau);
+}
+function waiterStop(w) { return w.xEdge + w.inward * w.dIn; }
+// Сужает участок пола [lo, hi] до свободного в момент t: пока официант на кухне, у его края пола еда не приземляется
+function waiterFree(t, lo, hi) {
+  for (const w of G.waiters) {
+    const tau = w.tau + (t - G.time);
+    if (tau > -0.3 && tau < waiterLife(w) + 0.3) {
+      const xs = waiterStop(w);
+      if (w.side < 0) lo = Math.max(lo, xs + ZONE_M); else hi = Math.min(hi, xs - ZONE_M);
+    }
+  }
+  return [lo, hi];
+}
+function pathClear(ws, t0, x0, t1, x1) {   // можно ли пройти из (t0, x0) в (t1, x1), не задев официантов
+  const n = Math.max(1, Math.ceil((t1 - t0) / 0.08));
+  for (let i = 0; i <= n; i++) {
+    const t = t0 + (t1 - t0) * i / n, x = x0 + (x1 - x0) * i / n;
+    for (const w of ws) { const xw = waiterAt(w, t); if (xw !== null && Math.abs(x - xw) < SAFE_DIST) return false; }
+  }
+  return true;
+}
+function trySpawnWaiter() {
+  const ws = G.waiters, L = G.level;
+  const evs = G.foods.filter(f => f.state === 'air' && !f.missed).map(f => ({ t: f.landAt, x: f.landX })).sort((a, b) => a.t - b.t);
+  const chain = [{ t: G.time, x: cook.x }].concat(evs);
+  for (let i = 0; i < 30; i++) {
+    const side = ws.length ? -ws[0].side : (Math.random() < 0.5 ? -1 : 1);      // -1: слева, 1: справа; второй — с другой стороны
+    let dmax = L >= 8 ? 140 : L >= 5 ? 125 : 105;                              // насколько глубоко зайдёт
+    if (ws.length) dmax = Math.min(dmax, 134 - (ws[0].dIn - 14));               // между двумя официантами остаётся проход
+    if (dmax < 50) return false;
+    const depth = rnd(50, dmax);
+    const w = { side, xEdge: side < 0 ? -14 : 294, inward: -side, dIn: depth + 14, v: rnd(46, 58) + Math.min(12, L),
+      S: rnd(1.3, 2.4), tau: -WARN_T, pause: 0, x: side < 0 ? -14 : 294, dir: -side, anim: 0, mode: 'warn' };
+    let ok = true;                                                             // уже запланированные приземления не должны пересекаться с ним
+    const xs = waiterStop(w), life = waiterLife(w);
+    for (let j = 1; j < chain.length && ok; j++) {
+      const tau = -WARN_T + (chain[j].t - G.time);                             // «личное» время официанта в момент приземления
+      if (tau > -0.3 && tau < life + 0.3 && (side < 0 ? chain[j].x < xs + ZONE_M : chain[j].x > xs - ZONE_M)) ok = false;
+    }
+    for (let j = 1; j < chain.length && ok; j++) ok = pathClear([w], chain[j - 1].t, chain[j - 1].x, chain[j].t, chain[j].x);
+    if (!ok) continue;
+    ws.push(w);
+    Sound.sfx.bell();
+    if (G.waiterHint++ === 0) toast('ОФИЦИАНТ!');
+    return true;
+  }
+  return false;
+}
+function bumpCook(w) {                     // официант врезался в повара
+  cook.kdir = cook.x < w.x ? -1 : cook.x > w.x ? 1 : w.inward;
+  cook.knockT = 0.22; cook.stun = 0.9; cook.iframes = 1.7;
+  w.pause = 0.6;
+  G.combo = 0;
+  if (!REDUCE_MOTION) G.shake = Math.max(G.shake, 0.22);
+  pop(cook.x, CATCH_Y - 24, 'БАМ!', 'R');
+  const cols = ['w', 'l', 'f', 'y'];       // осколки посуды с подноса
+  for (let i = 0; i < 12; i++) G.parts.push({ x: w.x + w.inward * 8, y: 132, vx: rnd(-70, 70), vy: rnd(-120, -30), life: rnd(0.4, 0.9), col: cols[rndi(0, 3)], s: 2 });
+  Sound.sfx.bump();
+}
+function updateWaiters(dt) {
+  if (G.state === 'play' && G.level >= 3 && G.readyT <= 0 && !G.noPenalty) {
+    G.waiterCd -= dt;
+    if (G.waiterCd <= 0) {
+      if (G.waiters.length < (G.level >= 7 ? 2 : 1) && trySpawnWaiter()) {
+        const base = Math.max(7, 15 - (G.level - 3) * 1.2);                   // чем выше уровень, тем чаще
+        G.waiterCd = rnd(base * 0.8, base * 1.2);
+      } else G.waiterCd = 1.0;
+    }
+  }
+  for (const w of G.waiters) {
+    w.anim += dt;
+    if (w.pause > 0) w.pause -= dt; else w.tau += dt;
+    const tIn = w.dIn / w.v;
+    w.x = waiterX(w, w.tau);
+    w.dir = w.tau < tIn + w.S ? w.inward : -w.inward;
+    w.mode = w.tau <= 0 ? 'warn' : w.pause > 0 ? 'stumble' : w.tau < tIn ? 'in' : w.tau < tIn + w.S ? 'stand' : 'out';
+    if (G.state === 'play' && !G.noPenalty && w.tau > 0 && cook.iframes <= 0 && Math.abs(cook.x - w.x) < BUMP_DIST) bumpCook(w);
+  }
+  G.waiters = G.waiters.filter(w => w.tau < waiterLife(w));
+}
+// Автопилот для проверок: едет к ближайшему приземлению с постоянной скоростью — именно этот путь и проверяет расписание
+function botCareful(dt) {
+  let t = null;
+  for (const f of G.foods) if (f.state === 'air' && !f.missed && (!t || f.landAt < t.landAt)) t = f;
+  if (!t) return 0;
+  const dist = clamp(t.landX, COOK_MIN, COOK_MAX) - cook.x, remain = t.landAt - G.time;
+  const sp = Math.min(COOK_SPEED, remain > 0.03 ? Math.abs(dist) / remain : COOK_SPEED);
+  const mv = clamp(dist, -sp * dt, sp * dt);
+  cook.x += mv;
+  return Math.abs(mv) > 0.02 ? Math.sign(mv) : 0;
+}
+
+/* ------------------------------ Огород: сбор урожая ------------------------------ */
+// После каждых двух пройденных уровней повар выходит на огород собирать овощи.
+// Ходит стрелками, прыгает (стрелка вверх), бьёт сковородкой (пробел). Камни надо перепрыгивать,
+// на колорадских жуков — прыгать сверху или бить их сковородкой. Собрал 30 продуктов — вернулся на кухню.
+// Серия из 10 продуктов подряд без столкновений даёт ×2. Столкновение сбрасывает серию и роняет часть урожая.
+let HV = null;
+
+function startFade(wait, onMid) { G.fade = { wait, a: 0, dir: 1, onMid }; }
+function updateFade(dt) {                    // затемнение: пауза → чернеет → onMid → светлеет
+  const F = G.fade;
+  if (!F) return;
+  if (F.wait > 0) { F.wait -= dt; return; }
+  F.a += F.dir * dt / 0.5;
+  if (F.dir > 0 && F.a >= 1) { F.a = 1; F.dir = -1; F.onMid(); }
+  else if (F.dir < 0 && F.a <= 0) G.fade = null;
+}
+function drawFade(c) {
+  if (G.fade && G.fade.a > 0) { c.globalAlpha = Math.min(1, G.fade.a); c.fillStyle = PAL.k; c.fillRect(0, 0, VW, VH); c.globalAlpha = 1; }
+}
+
+function newHarvest() {
+  return {
+    phase: 'intro', t: 0, introT: 2.8, stage: Math.floor(G.level / 2), doneT: 0, bonus: 0, hint: 8,
+    hp: { x: 46, z: 0, vz: 0, face: 1, off: PAN_DX, walkT: 0, moving: false, jumped: false, swingT: 0, swingCd: 0,
+          iframes: 0, stun: 0, knockT: 0, kdir: 1, jumpBuf: 0 },
+    items: [], rocks: [], bugs: [], count: 0, streak: 0, hits: 0, kills: 0, genX: 160, cam: 0
+  };
+}
+function enterHarvest() {                    // вызывается посреди затемнения
+  G.state = 'harvest'; G.noPenalty = false;
+  HV = newHarvest();
+  while (HV.genX < 560) genChunk();
+  G.foods = []; G.waiters = []; G.parts = []; G.pops = []; G.toast = null; G.shake = 0;
+  Sound.music.track(1); Sound.music.tempo(122); Sound.sfx.harvest();
+}
+function leaveHarvest() {                    // вызывается посреди затемнения: повар появляется на кухне
+  G.state = 'play'; G.noPenalty = false; HV = null;
+  G.foods = []; G.waiters = []; G.parts = []; G.pops = [];
+  cat.x = CAT_HOME; cat.state = 'idle'; cat.target = null; cat.dir = -1;
+  cook.x = 140; cook.off = PAN_DX; cook.face = 1; cook.flick = 0; cook.stun = 0; cook.knockT = 0; cook.iframes = 0;
+  G.readyT = 1.3; G.spawnCd = 0; G.waiterCd = Math.max(G.waiterCd, 6);
+  Sound.music.track(0); Sound.music.tempo(Math.min(176, 132 + G.level * 4));
+  sparkle(cook.x, CATCH_Y, true); sparkle(cook.x - 14, CATCH_Y + 6, true); sparkle(cook.x + 14, CATCH_Y + 6, true);
+  toast('ПОВАР НА КУХНЕ!');
+}
+function harvestPress(code) {
+  const hp = HV.hp;
+  if (HV.phase === 'intro') { if (HV.t > 0.8) HV.introT = 0; return; }          // любая клавиша пропускает заставку
+  if (HV.phase !== 'run') return;
+  if (code === 'ArrowUp' || code === 'KeyW') hp.jumpBuf = 0.12;                  // прыжок можно нажать чуть заранее
+  else if (code === 'Space' || code === 'KeyX' || code === 'KeyZ') {            // удар сковородкой
+    if (hp.swingCd > 0 || hp.stun > 0) return;
+    hp.swingT = 0.22; hp.swingCd = 0.38; Sound.sfx.swing();
+  }
+}
+
+// Расстановка препятствий и продуктов кусками — впереди повара всегда есть новый участок огорода
+function addItem(x, z, type) { HV.items.push({ x, z, type: type === undefined ? rndi(0, 3) : type, taken: false, drop: 0, vx: 0, vz: 0, ph: Math.random() * 6 }); }
+function addRock(x, big) { HV.rocks.push({ x, w: big ? 14 : 10, h: big ? 11 : 8, v: big ? 0 : 1 }); }
+function addBug(min, max) {
+  const sp = 20 + 3 * Math.min(HV.stage, 6);
+  HV.bugs.push({ x: (min + max) / 2 + rnd(-8, 8), min, max, dir: Math.random() < 0.5 ? -1 : 1, v: sp + rnd(-3, 3), state: 'walk', t: 0, anim: 0, vx: 0, vz: 0, z: 0 });
+}
+function genChunk() {
+  const x0 = HV.genX, k = HV.stage;
+  const bag = ['row', 'row', 'hop', 'hop', 'bug', 'bug'];
+  if (k >= 2) bag.push('twin', 'bugrock', 'sky');
+  if (k >= 3) bag.push('bugrock', 'twin');
+  const t = bag[rndi(0, bag.length - 1)];
+  let len = 120;
+  const arc = (rx) => { for (let i = -2; i <= 2; i++) addItem(rx + i * 13, 26 + (2 - Math.abs(i)) * 9); };   // дуга над камнем
+  if (t === 'row') {                         // ряд продуктов на земле
+    const n = rndi(4, 6);
+    for (let i = 0; i < n; i++) addItem(x0 + 24 + i * 15, 8);
+    len = 48 + n * 15;
+  } else if (t === 'hop') {                  // камень: перепрыгни и собери дугу
+    const rx = x0 + 56; addRock(rx, Math.random() < 0.6); arc(rx);
+    addItem(rx - 40, 8); addItem(rx + 40, 8);
+    len = 116;
+  } else if (t === 'twin') {                 // два камня, между ними — продукты на земле
+    const r1 = x0 + 40, r2 = x0 + 125;
+    addRock(r1, true); addRock(r2, Math.random() < 0.5);
+    for (let i = 0; i < 3; i++) addItem((r1 + r2) / 2 - 14 + i * 14, 8);
+    addItem(r1, 44); addItem(r2, 44);
+    len = 175;
+  } else if (t === 'bug') {                  // жук ходит туда-сюда: прыгни на него или ударь
+    addBug(x0 + 40, x0 + 105);
+    addItem(x0 + 62, 46); addItem(x0 + 84, 46);
+    for (let i = 0; i < 3; i++) addItem(x0 + 130 + i * 15, 8);
+    len = 185;
+  } else if (t === 'bugrock') {              // камень и жук подряд
+    const rx = x0 + 45; addRock(rx, true); arc(rx);
+    addBug(x0 + 85, x0 + 140);
+    for (let i = 0; i < 3; i++) addItem(x0 + 150 + i * 15, 8);
+    len = 205;
+  } else {                                   // 'sky': продукты высоко — только в прыжке
+    for (let i = 0; i < 5; i++) addItem(x0 + 30 + i * 15, 48);
+    for (let i = 0; i < 3; i++) addItem(x0 + 125 + i * 15, 8);
+    len = 175;
+  }
+  HV.genX = x0 + len;
+}
+
+function collectItem(it) {
+  if (HV.phase !== 'run') return;
+  it.taken = true;
+  HV.count++; HV.streak++;
+  const mult = HV.streak >= COMBO_AT ? 2 : 1, pts = 10 * mult, sx = it.x - HV.cam, sy = GROUND_Y - it.z;
+  addScore(pts);
+  pop(sx, sy - 10, '+' + pts, mult > 1 ? 'y' : 'w');
+  sparkle(sx, sy, mult > 1);
+  Sound.sfx.pick(HV.streak);
+  if (HV.streak === COMBO_AT) { toast('КОМБО ×2!'); Sound.sfx.life(); }
+  if (HV.count >= HARVEST_GOAL) finishHarvest();
+}
+function harvestHit(srcX) {                  // задел камень или жука
+  const hp = HV.hp;
+  hp.iframes = 1.7; hp.stun = 0.5; hp.knockT = 0.25; hp.kdir = hp.x < srcX ? -1 : 1; hp.vz = 130; hp.z = Math.max(hp.z, 0.01); hp.jumped = false;
+  HV.hits++; HV.streak = 0;
+  const lost = Math.min(HV.count, 3);         // часть урожая рассыпается — её можно подобрать снова
+  HV.count -= lost;
+  for (let i = 0; i < lost; i++) HV.items.push({ x: hp.x, z: hp.z + 20, type: rndi(0, 3), taken: false, drop: 0.9, vx: rnd(-80, 80), vz: rnd(90, 170), ph: 0 });
+  pop(hp.x - HV.cam, GROUND_Y - 46, lost ? '-' + lost : 'ОЙ!', 'R');
+  if (!REDUCE_MOTION) G.shake = 0.2;
+  Sound.sfx.bump();
+}
+function killBug(b, how) {
+  b.state = how === 'pan' ? 'flip' : 'squash'; b.t = 0.6; HV.kills++;
+  if (how === 'pan') { b.vx = HV.hp.face * 120; b.vz = 150; b.z = 1; } else b.z = 0;
+  addScore(25);
+  pop(b.x - HV.cam, GROUND_Y - 24, '+25', 'y');
+  for (let i = 0; i < 8; i++) G.parts.push({ x: b.x - HV.cam, y: GROUND_Y - 6, vx: rnd(-60, 60), vy: rnd(-90, -20), life: rnd(0.3, 0.6), col: Math.random() < 0.5 ? 'y' : 'k', s: 2 });
+  Sound.sfx.squash();
+}
+function finishHarvest() {
+  HV.phase = 'done'; HV.doneT = 0; HV.bonus = HV.hits === 0 ? 100 : 0;
+  if (HV.bonus) addScore(HV.bonus);
+  confetti(); Sound.sfx.done();
+  startFade(3.0, leaveHarvest);
+}
+
+function updateHarvest(dt) {
+  const hp = HV.hp;
+  HV.t += dt;
+  if (HV.phase === 'intro') { HV.introT -= dt; if (HV.introT <= 0) HV.phase = 'run'; }
+  const run = HV.phase === 'run';
+  if (run && HV.hint > 0) HV.hint -= dt;
+  for (const k of ['stun', 'iframes', 'swingCd', 'swingT', 'jumpBuf']) if (hp[k] > 0) hp[k] -= dt;
+  // ходьба
+  let dir = 0;
+  if (run && hp.stun <= 0) dir = inputDir();
+  hp.x = Math.max(14, hp.x + dir * WALK_V * dt);
+  if (hp.knockT > 0) { hp.x = Math.max(14, hp.x + hp.kdir * 130 * (hp.knockT / 0.25) * dt); hp.knockT -= dt; }
+  hp.moving = dir !== 0;
+  if (dir !== 0) { hp.face = dir; hp.walkT += dt; } else hp.walkT = 0;
+  hp.off += clamp(hp.face * PAN_DX - hp.off, -320 * dt, 320 * dt);
+  // прыжок: чем дольше держишь стрелку вверх, тем выше
+  const jumpHeld = down.has('ArrowUp') || down.has('KeyW');
+  if (run && hp.stun <= 0 && hp.jumpBuf > 0 && hp.z <= 0) { hp.vz = JUMP_V; hp.z = 0.01; hp.jumpBuf = 0; hp.jumped = true; Sound.sfx.jump(); }
+  if (hp.z > 0 || hp.vz > 0) {
+    if (hp.jumped && hp.vz > 130 && !jumpHeld) hp.vz = 130;
+    hp.vz -= GRAV * dt; hp.z += hp.vz * dt;
+    if (hp.z <= 0) { hp.z = 0; hp.vz = 0; hp.jumped = false; }
+  }
+  if (HV.phase === 'done') {                                       // радуется урожаю: подпрыгивает
+    HV.doneT += dt;
+    if (hp.z <= 0 && Math.floor(HV.doneT / 0.55) !== Math.floor((HV.doneT - dt) / 0.55)) { hp.vz = 150; hp.z = 0.01; }
+  }
+  while (HV.genX < hp.x + 420) genChunk();
+  HV.cam = Math.max(0, hp.x - 120);
+  // продукты
+  for (const it of HV.items) {
+    if (it.taken) continue;
+    if (it.drop > 0) {                                              // рассыпанный продукт: летит и падает
+      it.drop -= dt; it.vz -= GRAV * 0.6 * dt; it.x += it.vx * dt; it.z += it.vz * dt;
+      if (it.z <= 8) { it.z = 8; it.vz = Math.abs(it.vz) > 50 ? -it.vz * 0.45 : 0; it.vx *= 0.5; }
+      if (it.drop <= 0) { it.z = 8; it.vz = 0; it.vx = 0; }
+      continue;
+    }
+    if (run && Math.abs(it.x - hp.x) <= 11 && it.z >= hp.z - 2 && it.z <= hp.z + 34) collectItem(it);
+  }
+  if (run) {
+    for (const r of HV.rocks) if (hp.iframes <= 0 && Math.abs(r.x - hp.x) < r.w / 2 + 6 && hp.z < r.h - 1) harvestHit(r.x);
+    for (const b of HV.bugs) {
+      if (b.state !== 'walk') continue;
+      const rel = (b.x - hp.x) * hp.face, dx = Math.abs(b.x - hp.x);
+      if (hp.swingT > 0 && rel > 2 && rel < 58 && hp.z < 22) { killBug(b, 'pan'); continue; }               // удар сковородкой
+      if (dx < 11 && hp.z > 2 && hp.z < 15 && hp.vz < 0) { killBug(b, 'stomp'); hp.vz = 180; hp.z += 1; hp.jumped = false; continue; }   // прыжок сверху
+      if (hp.iframes <= 0 && dx < 10 && hp.z < 8) harvestHit(b.x);
+    }
+  }
+  for (const b of HV.bugs) {
+    b.anim += dt;
+    if (b.state === 'walk') {
+      b.x += b.dir * b.v * dt;
+      if (b.x < b.min) { b.x = b.min; b.dir = 1; } else if (b.x > b.max) { b.x = b.max; b.dir = -1; }
+    } else {
+      b.t -= dt;
+      if (b.state === 'flip') { b.x += b.vx * dt; b.vz -= GRAV * dt; b.z += b.vz * dt; if (b.z < 0) { b.z = 0; b.vx = 0; b.vz = 0; } }
+    }
+  }
+  HV.bugs = HV.bugs.filter(b => b.state === 'walk' || b.t > 0);
+}
+
+/* ---- рисование огорода ---- */
+function hash(n) { n = Math.imul(n ^ 61, 0x9e3779b1); n ^= n >>> 15; n = Math.imul(n, 0x85ebca6b); n ^= n >>> 13; return n >>> 0; }
+function drawCloud(c, x, y, s) {
+  c.fillStyle = PAL.w;
+  c.fillRect(x + 4 * s, y, 8 * s, 2 * s); c.fillRect(x + s, y + 2 * s, 14 * s, 2 * s); c.fillRect(x, y + 3 * s, 16 * s, 2 * s);
+  c.fillStyle = PAL.l; c.fillRect(x + s, y + 4 * s, 14 * s, s);
+}
+function drawGarden(c) {
+  const cam = HV.cam, cx = Math.round(cam), t = G.time;
+  c.fillStyle = PAL.B; c.fillRect(0, 0, VW, 74);
+  c.fillStyle = PAL.V; c.fillRect(0, 74, VW, 60);
+  pxDisc(c, 240, 36, 10, 'o'); pxDisc(c, 240, 36, 8, 'y');                                                     // солнце
+  for (const [x0, y0, s, sp] of [[40, 28, 2, 4], [150, 20, 2, 3], [250, 62, 1, 5], [96, 80, 1, 2]]) {           // облака плывут
+    drawCloud(c, Math.round((((x0 - cam * 0.08 - t * sp) % 340) + 340) % 340 - 40), y0, s);
+  }
+  for (let x = 0; x < VW; x++) {                                                                               // холмы: далёкие и поближе
+    const a = cam * 0.2 + x, b = cam * 0.4 + x;
+    const h1 = 106 - Math.round(7 * Math.sin(a / 24) + 3 * Math.sin(a / 9));
+    const h2 = 120 - Math.round(6 * Math.sin(b / 17 + 2) + 2 * Math.sin(b / 6));
+    c.fillStyle = PAL.v; c.fillRect(x, h1, 1, 134 - h1);
+    c.fillStyle = PAL.g; c.fillRect(x, h2, 1, 134 - h2);
+  }
+  for (let i = -1; i < 30; i++) {                                                                               // белый штакетник
+    const px = Math.round(i * 10 - ((cam * 0.6) % 10));
+    c.fillStyle = PAL.k; c.fillRect(px - 1, 116, 5, 19);
+    c.fillStyle = PAL.w; c.fillRect(px, 117, 3, 17); c.fillStyle = PAL.l; c.fillRect(px + 2, 117, 1, 17);
+  }
+  c.fillStyle = PAL.k; c.fillRect(0, 121, VW, 4); c.fillRect(0, 128, VW, 4);
+  c.fillStyle = PAL.l; c.fillRect(0, 122, VW, 2); c.fillRect(0, 129, VW, 2);
+  c.fillStyle = PAL.G; c.fillRect(0, 134, VW, GROUND_Y - 134);                                                 // грядки с рядами кустиков
+  for (let r = 0; r < 3; r++) {
+    const ry = 137 + r * 6, par = 0.8 + r * 0.06;
+    c.fillStyle = PAL.g; c.fillRect(0, ry + 3, VW, 1);
+    for (let i = -1; i < 26; i++) {
+      const px = Math.round(i * 12 + r * 5 - ((cam * par) % 12));
+      c.fillStyle = PAL.g; c.fillRect(px, ry, 4, 3); c.fillStyle = PAL.G; c.fillRect(px + 1, ry, 2, 1);
+    }
+  }
+  c.fillStyle = PAL.G; c.fillRect(0, GROUND_Y, VW, 3);                                                         // земля
+  c.fillStyle = PAL.g; c.fillRect(0, GROUND_Y + 3, VW, 1);
+  c.fillStyle = PAL.C; c.fillRect(0, GROUND_Y + 4, VW, VH - GROUND_Y - 4);
+  for (let y = GROUND_Y + 10; y < VH; y += 8) { c.fillStyle = PAL.c; c.fillRect(0, y, VW, 1); }               // борозды
+  for (let wx = Math.floor(cx / 6) * 6; wx < cx + VW + 6; wx += 6) {                                           // камешки и комочки
+    const h = hash(wx);
+    if (h % 4 === 0) { c.fillStyle = (h & 64) ? PAL.c : PAL.y; c.fillRect(wx - cx, GROUND_Y + 6 + ((h >>> 8) % 22), 2, 1); }
+  }
+}
+function drawKitchenDoor(c, ox) {            // дверь на кухню — откуда вышел повар
+  if (ox < -60 || ox > VW) return;
+  const R = (col, x, y, w, h) => { c.fillStyle = PAL[col]; c.fillRect(ox + x, y, w, h); };
+  R('k', -6, 90, 56, 62); R('r', -5, 91, 54, 61);
+  for (let y = 96; y < 150; y += 6) { R('R', -5, y, 54, 1); for (let x = (y / 6) % 2 ? -1 : 3; x < 46; x += 8) R('R', x, y + 1, 1, 5); }
+  R('k', -2, 86, 48, 6); R('c', -1, 87, 46, 4);
+  R('k', 8, 112, 26, 40); R('c', 9, 113, 24, 39); R('C', 11, 115, 20, 37); R('y', 27, 133, 3, 3);
+  R('k', 3, 96, 38, 12); R('w', 4, 97, 36, 10); drawText(c, 'КУХНЯ', ox + 7, 99, 'k');
+}
+function drawHarvestObjects(c) {
+  const cam = Math.round(HV.cam), hp = HV.hp;
+  drawKitchenDoor(c, -cam);
+  for (const r of HV.rocks) {
+    const s = SPR.rock[r.v], x = Math.round(r.x - s.width / 2) - cam;
+    if (x > -24 && x < VW + 24) c.drawImage(s, x, GROUND_Y - s.height);
+  }
+  for (const it of HV.items) {
+    if (it.taken) continue;
+    const s = SPR.veg[it.type], x = Math.round(it.x - s.width / 2) - cam;
+    if (x < -24 || x > VW + 24) continue;
+    const bob = it.drop > 0 ? 0 : Math.round(Math.sin(G.time * 4 + it.ph));
+    c.drawImage(s, x, Math.round(GROUND_Y - it.z - s.height / 2) + bob);
+  }
+  for (const b of HV.bugs) {
+    const x = Math.round(b.x) - 7 - cam;
+    if (x < -24 || x > VW + 24) continue;
+    if (b.state === 'walk') { const s = (b.dir < 0 ? SPR.bug : SPR.bugR)[Math.floor(b.anim * 8) % 2]; c.drawImage(s, x, GROUND_Y - s.height); }
+    else c.drawImage(SPR.bugDead, x, GROUND_Y - SPR.bugDead.height - Math.round(b.z));
+  }
+  // повар: мигает после удара, взмахивает сковородкой
+  if (hp.iframes > 0 && hp.stun <= 0 && Math.floor(G.time / 0.08) % 2) return;
+  const ph = hp.swingT > 0 ? 1 - hp.swingT / 0.22 : 0, arcH = Math.sin(ph * Math.PI);
+  const jit = hp.stun > 0 ? (Math.floor(G.time * 30) % 2 ? 1 : -1) : 0;
+  const bodyX = Math.round(hp.x) - cam + jit, panX = bodyX + Math.round(hp.off) + hp.face * Math.round(12 * arcH);
+  const wf = hp.z > 0 ? 0 : (hp.moving ? Math.floor(hp.walkT / 0.11) % 4 : 0);
+  const py = drawCookFig(c, { bodyX, panX, face: hp.face, wf, floor: GROUND_Y - Math.round(hp.z), shadowY: GROUND_Y, panDY: 30 - Math.round(8 * arcH), stun: hp.stun > 0 });
+  if (hp.swingT > 0) {                                              // «вжух» — полоски за сковородкой
+    c.fillStyle = PAL.w;
+    for (const j of [-6, -2, 2]) c.fillRect(hp.face > 0 ? panX + 13 : panX - 19, py + j, 6, 1);
+  }
+}
+function drawHarvestHud(c) {
+  c.fillStyle = PAL.k; c.fillRect(0, 0, VW, HUD_H);
+  c.fillStyle = PAL.n; c.fillRect(0, HUD_H - 1, VW, 1);
+  drawText(c, 'ОЧКИ ' + pad(G.score, 6), 5, 2, 'y');
+  drawTextC(c, 'УРОЖАЙ ' + HV.count + '/' + HARVEST_GOAL, 150, 2, 'G');
+  for (let i = 0; i < Math.min(G.lives, 6); i++) c.drawImage(SPR.toque, VW - 4 - (i + 1) * 12, 1);
+  if (HV.phase === 'run' || HV.phase === 'done') {
+    if (HV.streak >= COMBO_AT) drawTextO(c, 'КОМБО ×2!', 5, 16, blink(0.3) ? 'R' : 'y', 1);
+    else if (HV.streak > 0) drawTextO(c, 'СЕРИЯ ' + HV.streak + '/' + COMBO_AT, 5, 16, 'w', 1);
+  }
+  if (HV.phase === 'run' && HV.hint > 0) { const s = '↑ ПРЫЖОК · ПРОБЕЛ УДАР'; drawTextO(c, s, VW - 5 - textWidth(s, 1), 16, 'w', 1); }
+}
+function drawHarvestOverlay(c) {
+  if (HV.phase === 'intro') {
+    dim(c, 0.4);
+    logoLine(c, 'ВРЕМЯ УРОЖАЯ!', 140, 20, 3, 'y', 'r');
+    drawTextOC(c, 'СОБЕРИ ' + HARVEST_GOAL + ' ПРОДУКТОВ', 140, 48, 'w', 1);
+    for (let i = 0; i < SPR.veg.length; i++) { const s = SPR.veg[i]; c.drawImage(s, Math.round(74 + i * 44 - s.width / 2), 58); }
+    drawTextOC(c, 'СЕРИЯ ИЗ ' + COMBO_AT + ': ОЧКИ ×2', 140, 82, 'y', 1);
+    let x = 74; const y = 94;
+    x += drawKeycap(c, x, y, '↑') + 3; drawTextO(c, 'ПРЫЖОК', x, y + 3, 'w', 1); x += textWidth('ПРЫЖОК') + 12;
+    x += drawKeycap(c, x, y, 'ПРОБЕЛ') + 3; drawTextO(c, 'УДАР', x, y + 3, 'w', 1);
+    drawTextOC(c, 'КАМНИ ПЕРЕПРЫГИВАЙ, ЖУКОВ БЕЙ!', 140, 110, 'w', 1);
+  } else if (HV.phase === 'done') {
+    logoLine(c, 'УРОЖАЙ СОБРАН!', 140, 30, 3, 'G', 'g');
+    drawTextOC(c, 'ЖУКОВ ПОБЕЖДЕНО: ' + HV.kills, 140, 62, 'w', 1);
+    if (HV.bonus) drawTextOC(c, 'БЕЗ ПОТЕРЬ: +' + HV.bonus, 140, 74, 'y', 1);
+  }
+}
+
+/* ------------------------------ Ход игры ------------------------------ */
+function resetWorld() {
+  G.foods = []; G.parts = []; G.pops = [];
+  cat.x = CAT_HOME; cat.state = 'idle'; cat.target = null; cat.dir = -1;
+  cook.x = 140; cook.off = PAN_DX; cook.face = 1; cook.flick = 0; cook.walkT = 0;
+  cook.stun = 0; cook.knockT = 0; cook.iframes = 0; G.waiters = []; G.waiterCd = 0;
+}
+function startGame() {
+  Sound.init();
+  G.score = 0; G.lives = 3; G.level = 1; G.catches = 0; G.combo = 0; G.nextLife = 1000; G.nextLevelAt = catchesPerLevel(1); G.fade = null; G.noPenalty = false; G.resume = 'play'; HV = null;
+  G.newRecord = false; G.waiterHint = 0; G.readyT = 1.3; G.spawnCd = 0; G.shake = 0; G.toast = null; G.overT = 0;
+  resetWorld();
+  G.state = 'play';
+  Sound.music.rewind(); Sound.music.tempo(132); Sound.music.start(); Sound.sfx.start();
+}
+function levelUp() {
+  G.level++; G.nextLevelAt += catchesPerLevel(G.level);
+  if (G.level === 3) G.waiterCd = 6;        // с третьего уровня на кухню заходят официанты
+  Sound.music.tempo(Math.min(176, 132 + G.level * 4));
+  confetti(); Sound.sfx.level();
+  if ((G.level - 1) % 2 === 0) {            // пройдено два уровня — повар выходит на огород собирать урожай
+    toast('УРОВЕНЬ ПРОЙДЕН!');
+    G.noPenalty = true;                     // пока идёт переход, промахи и официанты ничего не отнимают
+    startFade(1.3, enterHarvest);
+  } else toast('УРОВЕНЬ ' + G.level);
+}
+function gameOver() {
+  G.state = 'over'; G.overT = 0.8;
+  Sound.music.stop(); Sound.sfx.over(); saveHi(G.hi);
+}
+function pauseGame() { if (G.state === 'play' || G.state === 'harvest') { G.resume = G.state; G.state = 'paused'; Sound.music.stop(); Sound.sfx.blip(); } }
+function resumeGame() { if (G.state === 'paused') { G.state = G.resume || 'play'; Sound.music.start(); Sound.sfx.blip(); } }
+
+// Автопилот: ведёт повара под ближайшую по времени еду (демо на заставке и автотесты)
+function botTarget() {
+  let best = null;
+  for (const f of G.foods) if (f.state === 'air' && !f.missed && (!best || f.landAt < best.landAt)) best = f;
+  return best ? clamp(best.landX, COOK_MIN, COOK_MAX) : null;
+}
+
+function updateCook(dt) {
+  let dir = 0;
+  if (cook.iframes > 0) cook.iframes -= dt;
+  if (cook.knockT > 0) { cook.x += cook.kdir * 190 * (cook.knockT / 0.22) * dt; cook.knockT -= dt; }
+  if (cook.stun > 0) cook.stun -= dt;                       // оглушён — управлять нельзя
+  else if (G.state === 'title') {                           // демо на заставке: быстрый автопилот
+    const tx = botTarget();
+    if (tx !== null) {
+      const mv = clamp(tx - cook.x, -COOK_SPEED * dt, COOK_SPEED * dt);
+      cook.x += mv;
+      if (Math.abs(mv) > 0.05) dir = Math.sign(mv);
+    }
+  } else if (G.auto && G.state === 'play') dir = botCareful(dt);
+  else if (G.state === 'play') { dir = inputDir(); cook.x += dir * COOK_SPEED * dt; }
+  cook.x = clamp(cook.x, COOK_MIN, COOK_MAX);
+  cook.moving = dir !== 0;
+  if (dir !== 0) { cook.face = dir; cook.walkT += dt; } else cook.walkT = 0;
+  cook.off += clamp(cook.face * PAN_DX - cook.off, -320 * dt, 320 * dt);
+  if (cook.flick > 0) cook.flick = Math.max(0, cook.flick - dt);
+}
+
+function updateSpawn(dt) {
+  if (G.state !== 'play' && G.state !== 'title') return;
+  if (G.readyT > 0) { G.readyT -= dt; return; }
+  if (G.noPenalty) return;               // идёт переход на огород
+  G.spawnCd -= dt;
+  if (G.spawnCd <= 0 && G.foods.length < levelParams(G.level).n) { spawnFood(); G.spawnCd = 1.0; }
+}
+
+function updateFoods(dt) {
+  for (const f of G.foods) {
+    if (f.state !== 'air') continue;
+    const t0 = f.t, t = (f.t += dt);
+    f.x = f.x0 + f.vx * t;
+    f.y = f.y0 - f.v0 * t + 0.5 * f.g * t * t;
+    f.rot += dt;
+    if (!f.missed && t > f.T * 0.5) {
+      const yPrev = f.y0 - f.v0 * t0 + 0.5 * f.g * t0 * t0;
+      if (yPrev < CATCH_Y && f.y >= CATCH_Y) {          // еда пересекла уровень сковородки сверху вниз
+        if (G.state !== 'over' && G.state !== 'paused' && Math.abs(f.x - cook.x) <= CATCH_HALF) { onCatch(f); continue; }
+        f.missed = true;
+      }
+    }
+    if (f.missed && f.y >= FOOD_FLOOR) onFloor(f);
+  }
+}
+
+function updateCat(dt) {
+  cat.anim += dt;
+  if (cat.state === 'eat') {
+    cat.eatT -= dt; cat.chompT -= dt;
+    if (cat.chompT <= 0) { Sound.sfx.chomp(); cat.chompT = 0.22; }
+    if (cat.eatT <= 0.5 && cat.target) { cat.target.state = 'gone'; cat.target = null; }
+    if (cat.eatT <= 0) cat.state = 'idle';
+    return;
+  }
+  let tgt = null, bd = Infinity;
+  for (const f of G.foods) if (f.state === 'floor') { const d = Math.abs(f.x - cat.x); if (d < bd) { bd = d; tgt = f; } }
+  if (tgt) {
+    if (cat.target !== tgt) { cat.target = tgt; if (G.state === 'play') Sound.sfx.meow(); }
+    cat.dir = tgt.x < cat.x ? -1 : 1;
+    const stopX = clamp(tgt.x - cat.dir * 12, 14, 266), step = 230 * dt, dx = stopX - cat.x;
+    cat.state = 'run';
+    if (Math.abs(dx) <= step) { cat.x = stopX; cat.state = 'eat'; cat.eatT = 0.9; cat.chompT = 0; }
+    else cat.x += Math.sign(dx) * step;
+  } else {
+    cat.target = null;
+    const dx = CAT_HOME - cat.x;
+    if (Math.abs(dx) > 0.5) { cat.state = 'run'; cat.dir = dx < 0 ? -1 : 1; cat.x += Math.sign(dx) * Math.min(Math.abs(dx), 150 * dt); }
+    else { cat.state = 'idle'; cat.x = CAT_HOME; }
+  }
+}
+
+function updateFx(dt) {                     // частицы, всплывающие цифры, тосты, тряска
+  for (const p of G.parts) { p.vy += 170 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  G.parts = G.parts.filter(p => p.life > 0);
+  for (const p of G.pops) { p.y -= 20 * dt; p.life -= dt; }
+  G.pops = G.pops.filter(p => p.life > 0);
+  if (G.toast) { G.toast.life -= dt; if (G.toast.life <= 0) G.toast = null; }
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt);
+  if (G.overT > 0) G.overT -= dt;
+}
+function update(dt) {
+  if (G.state === 'paused') return;       // на паузе время игры стоит
+  G.time += dt;
+  updateFade(dt);
+  if (G.state === 'harvest') { updateHarvest(dt); updateFx(dt); return; }
+  updateCook(dt);
+  updateWaiters(dt);
+  updateSpawn(dt);
+  updateFoods(dt);
+  updateCat(dt);
+  updateFx(dt);
+  G.foods = G.foods.filter(f => f.state !== 'gone');
+}
+
+/* ------------------------------ Отрисовка ------------------------------ */
+function drawTextO(c, str, x, y, col, scale) {           // текст с чёрным контуром
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) drawText(c, str, x + dx, y + dy, 'k', scale);
+  drawText(c, str, x, y, col, scale);
+}
+function drawTextOC(c, str, cx, y, col, scale) { drawTextO(c, str, cx - textWidth(str, scale || 1) / 2, y, col, scale); }
+function logoLine(c, str, cx, y, s, main, shadow) {      // крупная надпись с тенью и контуром
+  const x = Math.round(cx - textWidth(str, s) / 2);
+  for (let dy = -1; dy <= s + 1; dy++) for (let dx = -1; dx <= 1; dx++) drawText(c, str, x + dx, y + dy, 'k', s);
+  drawText(c, str, x, y + s, shadow, s);
+  drawText(c, str, x, y, main, s);
+}
+function drawKeycap(c, x, y, label) {
+  const w = textWidth(label, 1) + 8;
+  c.fillStyle = PAL.k; c.fillRect(x, y, w, 12);
+  c.fillStyle = PAL.w; c.fillRect(x + 1, y + 1, w - 2, 8);
+  c.fillStyle = PAL.f; c.fillRect(x + 1, y + 9, w - 2, 2);
+  drawText(c, label, x + 4, y + 1, 'k');
+  return w;
+}
+function dim(c, a) { c.globalAlpha = a; c.fillStyle = PAL.k; c.fillRect(0, 0, VW, VH); c.globalAlpha = 1; }
+
+function drawWaiters(c) {
+  for (const w of G.waiters) {
+    if (w.mode === 'warn') { drawWarnSign(c, w); continue; }
+    const set = w.dir > 0 ? SPR.waiter : SPR.waiterL;
+    const walking = w.mode === 'in' || w.mode === 'out';
+    const shake = w.mode === 'stumble' ? (Math.floor(w.anim * 24) % 2 ? 1 : -1) : 0;
+    c.drawImage(set[walking ? Math.floor(w.anim * 6) % 2 : 0], Math.round(w.x) - (w.dir > 0 ? 12 : 15) + shake, FLOOR_Y - 41);
+    if (w.mode === 'stand') drawBubble(c, 'ЗАКАЗ!', Math.round(w.x), FLOOR_Y - 56);
+    else if (w.mode === 'stumble') drawBubble(c, 'ОЙ!', Math.round(w.x), FLOOR_Y - 56);
+  }
+}
+function drawBubble(c, text, cx, y) {        // облачко с репликой
+  const w = textWidth(text, 1) + 6, x = cx - Math.floor(w / 2);
+  c.fillStyle = PAL.k; c.fillRect(x - 1, y - 1, w + 2, 11); c.fillRect(cx - 1, y + 10, 3, 2);
+  c.fillStyle = PAL.w; c.fillRect(x, y, w, 9); c.fillRect(cx, y + 9, 1, 2);
+  drawText(c, text, x + 3, y + 1, 'k');
+}
+function drawWarnSign(c, w) {                // мигающий знак у края: «сейчас зайдёт официант»
+  if (Math.floor(G.time / 0.25) % 2) return;
+  const x = w.side < 0 ? 3 : VW - 20, y = 140 + Math.round(Math.sin(G.time * 14));
+  c.fillStyle = PAL.k; c.fillRect(x, y, 17, 13);
+  c.fillStyle = PAL.y; c.fillRect(x + 1, y + 1, 15, 11);
+  drawText(c, w.side < 0 ? '!→' : '←!', x + 5, y + 3, 'k');
+}
+function drawCookFig(c, o) {                 // o: bodyX, panX, face, wf, floor, shadowY, panDY, stun
+  const bodyX = o.bodyX, panX = o.panX, face = o.face, floor = o.floor, top = floor - 40, wf = o.wf;
+  c.globalAlpha = 0.28; c.fillStyle = PAL.k; c.fillRect(bodyX - 11, o.shadowY, 23, 2); c.fillRect(bodyX - 8, o.shadowY + 2, 17, 1); c.globalAlpha = 1;
+  c.drawImage(SPR.legL, bodyX - 9, floor - 9 - (wf === 1 ? 2 : 0));
+  c.drawImage(SPR.legR, bodyX + 1, floor - 9 - (wf === 3 ? 2 : 0));
+  c.drawImage(SPR.cook, bodyX - 10, top);
+  drawArm(c, bodyX - face * 8, top + 24, bodyX - face * 10, top + 31);                       // свободная рука
+  const py = top + o.panDY;
+  if (face > 0) c.drawImage(SPR.pan, panX - 20, py - 4); else c.drawImage(SPR.panL, panX - 13, py - 4);
+  drawArm(c, bodyX + face * 8, top + 24, panX - face * 17, py);                              // рука со сковородкой
+  if (o.stun) for (let i = 0; i < 3; i++) {                                                  // звёздочки над головой
+    const a = G.time * 9 + i * 2.094, sx = Math.round(bodyX + Math.cos(a) * 9), sy = top - 4 + Math.round(Math.sin(a) * 3);
+    c.fillStyle = PAL.k; c.fillRect(sx - 2, sy - 1, 5, 3); c.fillRect(sx - 1, sy - 2, 3, 5);
+    c.fillStyle = PAL.y; c.fillRect(sx - 1, sy, 3, 1); c.fillRect(sx, sy - 1, 1, 3);
+  }
+  return py;
+}
+function drawCook(c) {
+  const jit = cook.stun > 0 ? (Math.floor(G.time * 30) % 2 ? 1 : -1) : 0;       // трясётся, когда оглушён
+  const lift = cook.flick > 0 ? -Math.round(4 * Math.sin((1 - cook.flick / 0.16) * Math.PI)) : 0;   // сковородка подпрыгивает при подбрасывании
+  drawCookFig(c, {
+    bodyX: Math.round(clamp(cook.x - cook.off, 11, 269)) + jit, panX: Math.round(cook.x) + jit, face: cook.face,
+    wf: cook.moving ? Math.floor(cook.walkT / 0.1) % 4 : 0, floor: FLOOR_Y, shadowY: FLOOR_Y, panDY: 30 + lift, stun: cook.stun > 0
+  });
+}
+function drawArm(c, x0, y0, x1, y1) {
+  const pts = [];
+  const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
+  for (let i = 0; i <= n; i++) pts.push([Math.round(x0 + (x1 - x0) * i / n), Math.round(y0 + (y1 - y0) * i / n)]);
+  c.fillStyle = PAL.k; for (const [x, y] of pts) c.fillRect(x - 2, y - 2, 5, 5);
+  c.fillStyle = PAL.w; for (const [x, y] of pts) c.fillRect(x - 1, y - 1, 3, 3);
+  c.fillStyle = PAL.k; c.fillRect(x1 - 2, y1 - 2, 5, 5);
+  c.fillStyle = PAL.p; c.fillRect(x1 - 1, y1 - 1, 3, 3);
+}
+function drawFoods(c) {
+  for (const f of G.foods) {                                // отметки приземления
+    if (f.state !== 'air' || f.missed) continue;
+    const a = clamp(1 - (f.landAt - G.time) / 1.1, 0, 1), x = Math.round(f.landX);
+    c.globalAlpha = 0.15 + 0.4 * a; c.fillStyle = PAL.k;
+    c.fillRect(x - 6, 173, 13, 1); c.fillRect(x - 4, 172, 9, 1); c.fillRect(x - 4, 174, 9, 1);
+    c.globalAlpha = 1;
+  }
+  for (const f of G.foods) {
+    const fr = SPR.foods[f.type].f;
+    let k = 0;
+    if (f.state === 'air') { const n = Math.floor(f.rot * 7); k = f.spinDir > 0 ? n % 4 : (3 - n % 4); }
+    const s = fr[k];
+    c.drawImage(s, Math.round(f.x - s.width / 2), Math.round(f.y - s.height / 2));
+  }
+}
+function drawCat(c) {
+  if (cat.state === 'idle') {
+    c.drawImage(SPR.catSit, Math.round(cat.x) - 9, CAT_Y - 23);
+    c.drawImage(SPR.catTail[Math.floor(G.time * 2) % 2], Math.round(cat.x) + 6, CAT_Y - 17);
+    return;
+  }
+  const set = cat.state === 'run' ? (cat.dir < 0 ? SPR.catRun : SPR.catRunR) : (cat.dir < 0 ? SPR.catEat : SPR.catEatR);
+  const s = set[Math.floor(cat.anim * (cat.state === 'run' ? 12 : 8)) % 2];
+  c.drawImage(s, Math.round(cat.x) - 16, CAT_Y - 16);
+}
+function drawParticles(c) {
+  for (const p of G.parts) { c.fillStyle = PAL[p.col]; c.fillRect(Math.round(p.x), Math.round(p.y), p.s, p.s); }
+  for (const p of G.pops) drawTextOC(c, p.text, p.x, Math.round(p.y), p.col, 1);
+}
+function drawHud(c) {
+  c.fillStyle = PAL.k; c.fillRect(0, 0, VW, HUD_H);
+  c.fillStyle = PAL.n; c.fillRect(0, HUD_H - 1, VW, 1);
+  if (G.state === 'title') { drawTextC(c, 'РЕКОРД ' + pad(G.hi, 6), 140, 2, 'y'); return; }
+  drawText(c, 'ОЧКИ ' + pad(G.score, 6), 5, 2, 'y');
+  const mult = Math.min(5, 1 + Math.floor(G.combo / 10));
+  if (mult > 1) drawText(c, '×' + mult, 72, 2, 'R');
+  drawText(c, 'РЕКОРД ' + pad(G.hi, 6), 94, 2, 'f');
+  drawText(c, 'УР.' + G.level, 178, 2, 'w');
+  for (let i = 0; i < Math.min(G.lives, 6); i++) c.drawImage(SPR.toque, VW - 4 - (i + 1) * 12, 1);
+}
+function blink(period) { return Math.floor(G.time / period) % 2 === 0; }
+
+function drawTitle(c) {
+  logoLine(c, 'ВЕСЁЛЫЙ', 140, 17, 3, 'y', 'r');
+  logoLine(c, 'ПОВАР', 140, 42, 3, 'w', 'r');
+  drawTextOC(c, 'ЛОВИ ЕДУ, БЕРЕГИСЬ ОФИЦИАНТОВ!', 140, 71, 'w', 1);
+  // подсказки по управлению
+  let x = 140 - (13 * 2 + 3 + 4 + textWidth('ДВИГАТЬСЯ', 1)) / 2, y = 84;
+  x += drawKeycap(c, x, y, '←') + 2; x += drawKeycap(c, x, y, '→') + 5;
+  drawTextO(c, 'ДВИГАТЬСЯ', x, y + 3, 'w', 1);
+  y = 99; const t1 = 'ПАУЗА', t2 = 'ЗВУК';
+  x = 140 - (textWidth(t1) + textWidth(t2) + 13 * 2 + 10 + 8 + 8) / 2;
+  x += drawKeycap(c, x, y, 'Р') + 3; drawTextO(c, t1, x, y + 3, 'w', 1); x += textWidth(t1) + 10;
+  x += drawKeycap(c, x, y, 'М') + 3; drawTextO(c, t2, x, y + 3, 'w', 1);
+  if (blink(0.5)) { logoLine(c, 'НАЖМИ ПРОБЕЛ', 140, 116, 2, 'y', 'r'); }
+}
+function drawOverlays(c) {
+  if (G.state === 'title') drawTitle(c);
+  else if (G.state === 'play' && G.readyT > 0 && blink(0.25)) logoLine(c, 'ГОТОВЬСЯ!', 140, 82, 2, 'y', 'r');
+  else if (G.state === 'paused') {
+    dim(c, 0.6);
+    logoLine(c, 'ПАУЗА', 140, 56, 3, 'y', 'r');
+    drawTextOC(c, 'НАЖМИ Р ИЛИ ПРОБЕЛ', 140, 92, 'w', 1);
+    drawTextOC(c, 'КАЖДЫЕ 1000 ОЧКОВ: +1 ЖИЗНЬ', 140, 108, 'y', 1);
+  } else if (G.state === 'over') {
+    dim(c, 0.6);
+    logoLine(c, 'КОНЕЦ ИГРЫ', 140, 30, 3, 'R', 'r');
+    logoLine(c, 'ОЧКИ ' + pad(G.score, 6), 140, 66, 2, 'y', 'r');
+    if (G.newRecord && G.score > 0) { if (blink(0.35)) logoLine(c, 'НОВЫЙ РЕКОРД!', 140, 88, 2, 'G', 'g'); }
+    else drawTextOC(c, 'РЕКОРД ' + pad(G.hi, 6), 140, 92, 'w', 1);
+    if (G.overT <= 0 && blink(0.5)) drawTextOC(c, 'НАЖМИ ПРОБЕЛ — ЕЩЁ РАЗ', 140, 116, 'w', 1);
+  }
+  if (G.toast && G.state !== 'title') drawTextOC(c, G.toast.text, 140, G.toast.y, 'y', 2);
+  else if (G.toast) drawTextOC(c, G.toast.text, 140, G.toast.y, 'y', 1);
+}
+
+function render() {
+  const c = bx;
+  if (G.state === 'harvest' || (G.state === 'paused' && G.resume === 'harvest')) {
+    drawGarden(c); drawHarvestObjects(c); drawParticles(c); drawHarvestHud(c); drawHarvestOverlay(c);
+  } else {
+    drawScene(c, G.time);
+    if (G.state === 'title') dim(c, 0.5);
+    drawWaiters(c); drawCook(c); drawFoods(c); drawCat(c); drawParticles(c);
+    drawHud(c);
+  }
+  drawOverlays(c);
+  drawFade(c);
+  present();
+}
+function present() {
+  ctx.clearRect(0, 0, CW, CH);
+  ctx.fillStyle = '#000'; ctx.fillRect(SX, SY, SW, SH);
+  let ox = 0, oy = 0;
+  if (G.shake > 0) { const m = G.shake / 0.3; ox = Math.round(rnd(-2, 2) * m); oy = Math.round(rnd(-2, 2) * m); }
+  ctx.drawImage(buf, 0, 0, VW, VH, SX + ox * 3, SY + oy * 3, SW, SH);
+  ctx.drawImage(TV, 0, 0);
+}
+
+/* ------------------------------ Запуск ------------------------------ */
+function fit() {            // если окно браузера меньше 900×600 — уменьшаем экран целиком
+  const hint = document.getElementById('hint');
+  const room = window.innerHeight - (hint ? hint.offsetHeight + 14 : 0) - 16;
+  const s = Math.max(0.3, Math.min(1, (window.innerWidth - 16) / CW, room / CH));
+  tv.style.width = Math.round(CW * s) + 'px'; tv.style.height = Math.round(CH * s) + 'px';
+}
+let lastTs = 0, acc = 0;
+function frame(ts) {
+  requestAnimationFrame(frame);
+  if (!lastTs) lastTs = ts;
+  let dt = (ts - lastTs) / 1000; lastTs = ts;
+  if (dt > 0.25) dt = 0.25;
+  acc += dt;
+  while (acc >= STEP) { update(STEP); acc -= STEP; }
+  render();
+}
+function init() {
+  buildSprites();
+  BG = buildBackground();
+  TV = buildTvOverlay();
+  ctx.imageSmoothingEnabled = false; bx.imageSmoothingEnabled = false;
+  fit(); window.addEventListener('resize', fit);
+  tv.focus(); tv.addEventListener('pointerdown', () => tv.focus());
+  requestAnimationFrame(frame);
+}
+init();
+</script>
+</body>
+</html>
