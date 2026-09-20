@@ -4,6 +4,7 @@
   без библиотек, без картинок и шрифтов, без обращений в интернет (работает офлайн).
   Графика (спрайты, кухня, шрифт с кириллицей) и звук (Web Audio) нарисованы и синтезируются в коде.
   Управление: стрелки ← → (или A / D) — двигаться, Пробел — старт, P — пауза, M — звук.
+  В телефоне и планшете вместо клавиш появляются кнопки на экране: ход, прыжок, удар, пауза, звук.
   С третьего уровня на кухню заходят официанты: столкнёшься — повар оглушён, а комбо сбито.
   После каждых двух уровней повар выходит на огород: собирает 30 овощей (↑ прыжок, Пробел удар сковородкой),
   перепрыгивает камни, давит колорадских жуков и возвращается на кухню. Очки дают дополнительные жизни.
@@ -12,25 +13,65 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#07060c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="description" content="Весёлый повар — ретро 8-битная игра: лови еду сковородкой, не давай коту её съесть и не попадайся под ноги официантам и собирай урожай на огороде.">
 <title>Весёлый повар</title>
 <style>
   html, body { height: 100%; margin: 0; background: #07060c; overflow: hidden; }
   body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
          font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: #7d7aa0; }
+  [hidden] { display: none !important; }
   #tv { display: block; width: 900px; height: 600px; border-radius: 46px; outline: none;
         image-rendering: crisp-edges; image-rendering: pixelated;
         box-shadow: 0 24px 60px rgba(0, 0, 0, .7), 0 0 0 1px #000; }
   #hint { margin: 0; text-align: center; letter-spacing: .03em; }
+  #hintTouch { display: none; }
   kbd { display: inline-block; min-width: 1.6em; padding: 0 .4em; border: 1px solid #3a3852; border-bottom-width: 2px;
         border-radius: 4px; background: #14121e; color: #b9b6d6; font: inherit; text-align: center; }
+
+  /* Телефон: экран занимает свободное место, кнопки лежат вокруг него. Размеры и места считает fit() в скрипте. */
+  body.touch { position: fixed; left: 0; top: 0; width: 100%; display: block; overscroll-behavior: none; touch-action: none;
+               -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  body.touch #tv { position: fixed; }
+  body.touch #hintKb { display: none; }
+  body.touch #hint { position: fixed; left: 12px; right: 12px; display: none; }
+  body.touch.rotate #hint { display: block; }
+  body.touch.rotate #hintTouch { display: inline; }
+  #inset { position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none;
+           padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #pad { display: none; position: fixed; left: 0; top: 0; pointer-events: none; z-index: 5; }
+  body.touch #pad { display: block; }
+  #pad > * { position: absolute; }
+  .tb, .dk { box-sizing: border-box; display: flex; align-items: center; justify-content: center; pointer-events: auto;
+             background: #2a2745; border: 3px solid #57567a; border-radius: 14px; box-shadow: 0 4px 0 #0d0b1a;
+             cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none;
+             -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  #pad canvas { display: block; image-rendering: pixelated; pointer-events: none; }
+  #dpad { display: flex; gap: 6px; background: none; border: 0; box-shadow: none; border-radius: 0; }
+  #dpad .dk { flex: 1 1 0; min-width: 0; }
+  #bJump { background: #237a3b; border-color: #62c84a; }
+  #bHit { background: #a8232f; border-color: #e8443a; }
+  .tb.on, #dpad.l .dk:first-child, #dpad.r .dk:last-child { transform: translateY(3px); box-shadow: 0 1px 0 #0d0b1a; filter: brightness(1.4); }
+  #pad[data-mode="kitchen"] .act { opacity: .25; pointer-events: none; }
 </style>
 </head>
 <body>
 <canvas id="tv" width="900" height="600" tabindex="0" role="img"
-        aria-label="Игра «Весёлый повар»: повар подбрасывает еду сковородкой. Управление: стрелки влево и вправо, пробел — старт, P — пауза, M — звук."></canvas>
-<p id="hint"><kbd>←</kbd> <kbd>→</kbd> двигаться &nbsp;·&nbsp; <kbd>Пробел</kbd> старт &nbsp;·&nbsp; <kbd>P</kbd> пауза &nbsp;·&nbsp; <kbd>M</kbd> звук &nbsp;·&nbsp; на огороде: <kbd>↑</kbd> прыжок, <kbd>Пробел</kbd> удар</p>
+        aria-label="Игра «Весёлый повар»: повар подбрасывает еду сковородкой. Управление: стрелки влево и вправо, пробел — старт, P — пауза, M — звук. В телефоне — кнопки на экране."></canvas>
+<p id="hint"><span id="hintKb"><kbd>←</kbd> <kbd>→</kbd> двигаться &nbsp;·&nbsp; <kbd>Пробел</kbd> старт &nbsp;·&nbsp; <kbd>P</kbd> пауза &nbsp;·&nbsp; <kbd>M</kbd> звук &nbsp;·&nbsp; на огороде: <kbd>↑</kbd> прыжок, <kbd>Пробел</kbd> удар</span><span id="hintTouch">Поверните телефон горизонтально: экран станет крупнее</span></p>
+<div id="pad" data-mode="kitchen">
+  <div id="dpad" class="tb" role="group" aria-label="Ход влево и вправо"><div class="dk"><canvas></canvas></div><div class="dk"><canvas></canvas></div></div>
+  <div id="bHit" class="tb act" role="button" aria-label="Удар сковородкой"><canvas></canvas></div>
+  <div id="bJump" class="tb act" role="button" aria-label="Прыжок"><canvas></canvas></div>
+  <div id="bPause" class="tb" role="button" aria-label="Пауза"><canvas></canvas></div>
+  <div id="bSound" class="tb" role="button" aria-label="Звук"><canvas></canvas></div>
+  <div id="bFull" class="tb" role="button" aria-label="На весь экран" hidden><canvas></canvas></div>
+</div>
+<div id="inset"></div>
 <noscript><p>Для игры нужен включённый JavaScript.</p></noscript>
 <script>
 'use strict';
@@ -1123,28 +1164,34 @@ function codeOf(e) {
   return ({ ArrowLeft: 'ArrowLeft', Left: 'ArrowLeft', ArrowRight: 'ArrowRight', Right: 'ArrowRight', ArrowUp: 'ArrowUp', Up: 'ArrowUp',
     ArrowDown: 'ArrowDown', Down: 'ArrowDown', ' ': 'Space', Enter: 'Enter', Escape: 'Escape', p: 'KeyP', P: 'KeyP', m: 'KeyM', M: 'KeyM', a: 'KeyA', A: 'KeyA', d: 'KeyD', D: 'KeyD' })[e.key] || e.key;
 }
+function press(code) {                 // нажатие: клавишей или кнопкой на экране
+  down.add(code);
+  if (code === 'ArrowLeft' || code === 'KeyA') lastH = -1;
+  if (code === 'ArrowRight' || code === 'KeyD') lastH = 1;
+  onPress(code);
+}
+function release(code) { down.delete(code); }
 window.addEventListener('keydown', e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const code = codeOf(e);
   if (PREVENT.has(code)) e.preventDefault();      // стрелки и пробел не должны прокручивать страницу
   if (e.repeat) return;
   Sound.init();                                    // звук можно включать только после действия пользователя
-  down.add(code);
-  if (code === 'ArrowLeft' || code === 'KeyA') lastH = -1;
-  if (code === 'ArrowRight' || code === 'KeyD') lastH = 1;
-  onPress(code);
+  if (code.startsWith('Arrow') || code.startsWith('Key') || code === 'Space') setTouchMode(false);   // играют с клавиатуры — кнопки на экране не нужны
+  press(code);
 }, { passive: false });
 window.addEventListener('keyup', e => {
   const code = codeOf(e);
   if (PREVENT.has(code)) e.preventDefault();
-  down.delete(code);
+  release(code);
 });
-window.addEventListener('blur', () => { down.clear(); pauseGame(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { down.clear(); pauseGame(); } });
+window.addEventListener('blur', () => { down.clear(); releaseTouch(); pauseGame(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { down.clear(); releaseTouch(); pauseGame(); } });
 
 function onPress(code) {
   if (code === 'KeyM') {
     const m = Sound.toggleMute();
+    drawSoundIcon();
     toast(m ? 'ЗВУК: ВЫКЛ' : 'ЗВУК: ВКЛ', G.state === 'play' || G.state === 'paused' || G.state === 'harvest' ? 56 : 150);
     if (!m) Sound.sfx.blip();
     return;
@@ -1155,6 +1202,202 @@ function onPress(code) {
   else if (G.state === 'play') { if (pz) pauseGame(); }
   else if (G.state === 'harvest') { if (pz) pauseGame(); else harvestPress(code); }
   else if (G.state === 'paused') { if (pz || go) resumeGame(); }
+}
+
+/* ------------------------------ Кнопки на экране (телефон) ------------------------------ */
+// В телефоне нет клавиатуры, поэтому вокруг экрана появляются кнопки. Они нажимают те же press/release,
+// что и клавиши, и правила игры остаются теми же. Слева — ход (можно вести пальцем), справа — прыжок и удар
+// (нужны только на огороде), сверху — пауза, звук и «на весь экран».
+let touchMode = false;
+const padEl = document.getElementById('pad'), dpadEl = document.getElementById('dpad'), hintEl = document.getElementById('hint');
+const insetEl = document.getElementById('inset');
+const bHit = document.getElementById('bHit'), bJump = document.getElementById('bJump');
+const bPause = document.getElementById('bPause'), bSound = document.getElementById('bSound'), bFull = document.getElementById('bFull');
+const releasers = [];
+function releaseTouch() { for (const f of releasers) f(); }
+function setTouchMode(on) {
+  if (on === touchMode) return;
+  touchMode = on;
+  document.body.classList.toggle('touch', on);
+  if (!on) releaseTouch();
+  fit();
+}
+
+const POINTER_END = ['pointerup', 'pointercancel', 'lostpointercapture'];
+function holdButton(el, code) {            // пока палец на кнопке, «клавиша» зажата
+  let id = null;
+  const end = e => {
+    if (id === null || (e && e.pointerId !== id)) return;
+    id = null; el.classList.remove('on'); release(code);
+  };
+  el.addEventListener('pointerdown', e => {
+    if (id !== null) return;
+    e.preventDefault(); id = e.pointerId;
+    try { el.setPointerCapture(id); } catch (err) { /* без захвата кнопка отпустится по pointerup */ }
+    el.classList.add('on'); press(code);
+  });
+  for (const t of POINTER_END) el.addEventListener(t, end);
+  releasers.push(() => end());
+}
+function bindDpad() {                      // одна широкая кнопка: сторону выбирает положение пальца, им можно вести
+  let id = null, cur = null;
+  const set = code => {
+    if (code === cur) return;
+    if (cur) release(cur);
+    cur = code;
+    dpadEl.classList.toggle('l', code === 'ArrowLeft'); dpadEl.classList.toggle('r', code === 'ArrowRight');
+    if (code) press(code);
+  };
+  const side = e => { const r = dpadEl.getBoundingClientRect(); return e.clientX < r.left + r.width / 2 ? 'ArrowLeft' : 'ArrowRight'; };
+  const end = e => { if (id === null || (e && e.pointerId !== id)) return; id = null; set(null); };
+  dpadEl.addEventListener('pointerdown', e => {
+    if (id !== null) return;
+    e.preventDefault(); id = e.pointerId;
+    try { dpadEl.setPointerCapture(id); } catch (err) { /* см. holdButton */ }
+    set(side(e));
+  });
+  dpadEl.addEventListener('pointermove', e => { if (e.pointerId === id) set(side(e)); });
+  for (const t of POINTER_END) dpadEl.addEventListener(t, end);
+  releasers.push(() => end());
+}
+
+function tapButton(el, fn) {               // касание: срабатывает, когда палец отпущен на кнопке
+  let id = null;                           // (событие click не приходит, если другой палец уже держит кнопку хода)
+  const clear = () => { id = null; el.classList.remove('on'); };
+  el.addEventListener('pointerdown', e => { if (id === null) { id = e.pointerId; el.classList.add('on'); } });
+  el.addEventListener('pointerup', e => {
+    if (e.pointerId !== id) return;
+    clear();
+    const r = el.getBoundingClientRect();
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) fn();
+  });
+  el.addEventListener('pointercancel', clear);
+  releasers.push(clear);
+}
+
+const ICON = {                             // значки кнопок, по пикселям
+  L: ['....#', '...##', '..###', '.####', '#####', '.####', '..###', '...##', '....#'],
+  R: ['#....', '##...', '###..', '####.', '#####', '####.', '###..', '##...', '#....'],
+  U: ['....#....', '...###...', '..#####..', '.#######.', '#########'],
+  pause: Array(9).fill('###..###'),
+  snd: ['...#.....', '..##..#..', '####...#.', '####...#.', '####...#.', '..##..#..', '...#.....'],
+  mute: ['...#.....', '..##.....', '####.#.#.', '####..#..', '####.#.#.', '..##.....', '...#.....'],
+  full: ['###...###', '#.......#', '#.......#', '.........', '.........', '.........', '#.......#', '#.......#', '###...###']
+};
+function paintIcon(el, rows, col, k) {     // значок с тенью в один пиксель, растянутый в k раз
+  const cv = el.querySelector('canvas'), w = rows[0].length, h = rows.length;
+  cv.width = w + 1; cv.height = h + 1;
+  const c = cv.getContext('2d');
+  for (const [d, color] of [[1, PAL.k], [0, PAL[col]]]) {
+    c.fillStyle = color;
+    rows.forEach((r, y) => { for (let x = 0; x < w; x++) if (r[x] === '#') c.fillRect(x + d, y + d, 1, 1); });
+  }
+  cv.style.width = (w + 1) * k + 'px'; cv.style.height = (h + 1) * k + 'px';
+}
+function paintText(el, str, col, k) {
+  const cv = el.querySelector('canvas');
+  cv.width = textWidth(str, 1) + 2; cv.height = 9;
+  drawTextO(cv.getContext('2d'), str, 1, 1, col, 1);
+  cv.style.width = cv.width * k + 'px'; cv.style.height = cv.height * k + 'px';
+}
+function drawSoundIcon() { paintIcon(bSound, Sound.muted ? ICON.mute : ICON.snd, 'w', 2); }
+let paintedB = 0;
+function paintPad(b) {
+  if (b === paintedB) return;
+  paintedB = b;
+  const k = Math.max(1, Math.floor(b / 20));
+  paintIcon(dpadEl.children[0], ICON.L, 'y', k); paintIcon(dpadEl.children[1], ICON.R, 'y', k);
+  paintIcon(bJump, ICON.U, 'w', k);
+  paintText(bHit, 'УДАР', 'w', Math.max(1, Math.floor(b * 0.72 / 25 * 2) / 2));
+  paintIcon(bPause, ICON.pause, 'w', 2); paintIcon(bFull, ICON.full, 'w', 2);
+  drawSoundIcon();
+}
+
+function place(el, x, y, w, h) {
+  el.style.left = Math.round(x) + 'px'; el.style.top = Math.round(y) + 'px';
+  el.style.width = Math.round(w) + 'px'; el.style.height = Math.round(h) + 'px';
+}
+function safeInsets() {                    // вырезы и скруглённые углы экрана телефона
+  const cs = getComputedStyle(insetEl), px = v => parseFloat(v) || 0;
+  return { t: px(cs.paddingTop), r: px(cs.paddingRight), b: px(cs.paddingBottom), l: px(cs.paddingLeft) };
+}
+function fitTouch() {
+  const W = window.innerWidth, H = window.innerHeight, ins = safeInsets();
+  const L = ins.l, T = ins.t, aw = W - ins.l - ins.r, ah = H - ins.t - ins.b;
+  const M = 8, GAP = 6, MINI = 44;         // поля, зазор между кнопками, размер маленьких кнопок
+  // Вариант «по бокам»: экран посередине, кнопки слева и справа (телефон лёжа).
+  const shA = (ah - 8) / CH;
+  const bA = clamp(Math.floor(((aw - CW * shA) / 2 - 2 * M - GAP) / 2), 46, 76);
+  const sA = Math.max(0.25, Math.min(shA, (aw - 2 * (2 * bA + GAP + 2 * M)) / CW));
+  // Вариант «под экраном»: экран сверху на всю ширину, кнопки внизу (телефон стоя, планшет).
+  const bB = clamp(Math.floor((aw / 2 - 2 * M - GAP) / 2), 46, aw >= 700 ? 96 : 84);
+  const byB = T + ah - M - bB, myB = byB - GAP - MINI, roomB = myB - GAP - T;
+  const sB = Math.max(0.25, Math.min((aw - 8) / CW, (roomB - 40) / CH));
+  const side = sA > sB * 1.15;             // боковые кнопки берём, только если экран заметно крупнее
+  let s, b, cx, cy, by, my;
+  if (side) {
+    s = sA; b = bA;
+    cx = L + (aw - CW * s) / 2; cy = T + (ah - CH * s) / 2;
+    by = T + ah - M - b; my = T + M;
+  } else {
+    s = sB; b = bB; by = byB; my = myB;
+    cx = L + (aw - CW * s) / 2; cy = T + Math.max(6, (roomB - CH * s) * 0.4);
+  }
+  const rotate = !side && aw < 560;        // телефон стоя: подсказываем повернуть его
+  document.body.classList.toggle('rotate', rotate);
+  document.body.style.height = H + 'px';
+  padEl.style.width = W + 'px'; padEl.style.height = H + 'px';
+  tv.style.width = Math.round(CW * s) + 'px'; tv.style.height = Math.round(CH * s) + 'px';
+  tv.style.left = Math.round(cx) + 'px'; tv.style.top = Math.round(cy) + 'px'; tv.style.borderRadius = Math.round(46 * s) + 'px';
+  const wide = 2 * b + GAP, xl = L + M, xr = L + aw - M - wide;
+  place(dpadEl, xl, by, wide, b);
+  place(bHit, xr, by, b, b); place(bJump, xr + b + GAP, by, b, b);
+  place(bPause, xl, my, MINI, MINI);
+  let mx = L + aw - M - MINI;
+  place(bSound, mx, my, MINI, MINI); mx -= MINI + GAP;
+  if (!bFull.hidden) place(bFull, mx, my, MINI, MINI);
+  if (rotate) hintEl.style.top = Math.round(cy + CH * s + 10) + 'px';
+  paintPad(b);
+}
+function syncTouchUi() {                   // прыжок и удар нужны только на огороде: на кухне их кнопки притушены
+  if (!touchMode) return;
+  const m = G.state === 'harvest' || (G.state === 'paused' && G.resume === 'harvest') ? 'harvest' : 'kitchen';
+  if (padEl.dataset.mode !== m) padEl.dataset.mode = m;
+}
+function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) { document.exitFullscreen(); return; }
+    const p = document.documentElement.requestFullscreen();
+    if (p && p.then) p.then(() => { try { screen.orientation.lock('landscape').catch(() => {}); } catch (err) { /* нет блокировки поворота */ } }).catch(() => {});
+  } catch (err) { /* полный экран недоступен */ }
+}
+function initTouch() {
+  holdButton(bJump, 'ArrowUp'); holdButton(bHit, 'Space'); bindDpad();
+  tapButton(bPause, () => onPress('KeyP'));
+  tapButton(bSound, () => { Sound.init(); onPress('KeyM'); });
+  bFull.hidden = !(document.fullscreenEnabled && document.documentElement.requestFullscreen);
+  tapButton(bFull, toggleFullscreen);
+  // касание экрана: старт, продолжение после паузы, «ещё раз», пропуск заставки огорода
+  const screenDown = new Map();
+  document.addEventListener('pointerdown', e => { if (!padEl.contains(e.target)) screenDown.set(e.pointerId, [e.clientX, e.clientY]); });
+  document.addEventListener('pointercancel', e => screenDown.delete(e.pointerId));
+  document.addEventListener('pointerup', e => {
+    const d = screenDown.get(e.pointerId);
+    if (!d) return;
+    screenDown.delete(e.pointerId);
+    if (!touchMode || Math.hypot(e.clientX - d[0], e.clientY - d[1]) > 16) return;   // это касание, а не мазок пальцем
+    if (G.state === 'harvest') { if (HV && HV.phase === 'intro') onPress('Space'); }
+    else if (G.state === 'title' || G.state === 'over' || G.state === 'paused') onPress('Space');
+  });
+  window.addEventListener('touchstart', () => setTouchMode(true), { passive: true });   // сенсорный экран, даже если браузер этого не заявил
+  const unlock = () => Sound.init();             // в телефоне звук включается только по касанию
+  window.addEventListener('pointerup', unlock); window.addEventListener('touchend', unlock);
+  document.addEventListener('touchmove', e => { if (touchMode) e.preventDefault(); }, { passive: false });   // страница не ездит под пальцем
+  document.addEventListener('gesturestart', e => e.preventDefault());                                       // и не масштабируется щипком
+  document.addEventListener('contextmenu', e => { if (touchMode) e.preventDefault(); });
+  window.addEventListener('orientationchange', () => setTimeout(fit, 250));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', fit);
+  setTouchMode(typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches);
 }
 
 /* ------------------------------ Официанты ------------------------------ */
@@ -1566,7 +1809,7 @@ function drawHarvestHud(c) {
     if (HV.streak >= COMBO_AT) drawTextO(c, 'КОМБО ×2!', 5, 16, blink(0.3) ? 'R' : 'y', 1);
     else if (HV.streak > 0) drawTextO(c, 'СЕРИЯ ' + HV.streak + '/' + COMBO_AT, 5, 16, 'w', 1);
   }
-  if (HV.phase === 'run' && HV.hint > 0) { const s = '↑ ПРЫЖОК · ПРОБЕЛ УДАР'; drawTextO(c, s, VW - 5 - textWidth(s, 1), 16, 'w', 1); }
+  if (HV.phase === 'run' && HV.hint > 0) { const s = touchMode ? '↑ ПРЫЖОК · УДАР' : '↑ ПРЫЖОК · ПРОБЕЛ УДАР'; drawTextO(c, s, VW - 5 - textWidth(s, 1), 16, 'w', 1); }
 }
 function drawHarvestOverlay(c) {
   if (HV.phase === 'intro') {
@@ -1575,9 +1818,9 @@ function drawHarvestOverlay(c) {
     drawTextOC(c, 'СОБЕРИ ' + HARVEST_GOAL + ' ПРОДУКТОВ', 140, 48, 'w', 1);
     for (let i = 0; i < SPR.veg.length; i++) { const s = SPR.veg[i]; c.drawImage(s, Math.round(74 + i * 44 - s.width / 2), 58); }
     drawTextOC(c, 'СЕРИЯ ИЗ ' + COMBO_AT + ': ОЧКИ ×2', 140, 82, 'y', 1);
-    let x = 74; const y = 94;
+    let x = touchMode ? 58 : 74; const y = 94;
     x += drawKeycap(c, x, y, '↑') + 3; drawTextO(c, 'ПРЫЖОК', x, y + 3, 'w', 1); x += textWidth('ПРЫЖОК') + 12;
-    x += drawKeycap(c, x, y, 'ПРОБЕЛ') + 3; drawTextO(c, 'УДАР', x, y + 3, 'w', 1);
+    x += drawKeycap(c, x, y, touchMode ? 'УДАР' : 'ПРОБЕЛ') + 3; drawTextO(c, touchMode ? 'СКОВОРОДКОЙ' : 'УДАР', x, y + 3, 'w', 1);
     drawTextOC(c, 'КАМНИ ПЕРЕПРЫГИВАЙ, ЖУКОВ БЕЙ!', 140, 110, 'w', 1);
   } else if (HV.phase === 'done') {
     logoLine(c, 'УРОЖАЙ СОБРАН!', 140, 30, 3, 'G', 'g');
@@ -1853,11 +2096,13 @@ function drawTitle(c) {
   let x = 140 - (13 * 2 + 3 + 4 + textWidth('ДВИГАТЬСЯ', 1)) / 2, y = 84;
   x += drawKeycap(c, x, y, '←') + 2; x += drawKeycap(c, x, y, '→') + 5;
   drawTextO(c, 'ДВИГАТЬСЯ', x, y + 3, 'w', 1);
-  y = 99; const t1 = 'ПАУЗА', t2 = 'ЗВУК';
-  x = 140 - (textWidth(t1) + textWidth(t2) + 13 * 2 + 10 + 8 + 8) / 2;
-  x += drawKeycap(c, x, y, 'Р') + 3; drawTextO(c, t1, x, y + 3, 'w', 1); x += textWidth(t1) + 10;
-  x += drawKeycap(c, x, y, 'М') + 3; drawTextO(c, t2, x, y + 3, 'w', 1);
-  if (blink(0.5)) { logoLine(c, 'НАЖМИ ПРОБЕЛ', 140, 116, 2, 'y', 'r'); }
+  if (!touchMode) {
+    y = 99; const t1 = 'ПАУЗА', t2 = 'ЗВУК';
+    x = 140 - (textWidth(t1) + textWidth(t2) + 13 * 2 + 10 + 8 + 8) / 2;
+    x += drawKeycap(c, x, y, 'Р') + 3; drawTextO(c, t1, x, y + 3, 'w', 1); x += textWidth(t1) + 10;
+    x += drawKeycap(c, x, y, 'М') + 3; drawTextO(c, t2, x, y + 3, 'w', 1);
+  }
+  if (blink(0.5)) { logoLine(c, touchMode ? 'КОСНИСЬ ЭКРАНА' : 'НАЖМИ ПРОБЕЛ', 140, 116, 2, 'y', 'r'); }
 }
 function drawOverlays(c) {
   if (G.state === 'title') drawTitle(c);
@@ -1865,7 +2110,7 @@ function drawOverlays(c) {
   else if (G.state === 'paused') {
     dim(c, 0.6);
     logoLine(c, 'ПАУЗА', 140, 56, 3, 'y', 'r');
-    drawTextOC(c, 'НАЖМИ Р ИЛИ ПРОБЕЛ', 140, 92, 'w', 1);
+    drawTextOC(c, touchMode ? 'КОСНИСЬ ЭКРАНА' : 'НАЖМИ Р ИЛИ ПРОБЕЛ', 140, 92, 'w', 1);
     drawTextOC(c, 'КАЖДЫЕ 1000 ОЧКОВ: +1 ЖИЗНЬ', 140, 108, 'y', 1);
   } else if (G.state === 'over') {
     dim(c, 0.6);
@@ -1873,7 +2118,7 @@ function drawOverlays(c) {
     logoLine(c, 'ОЧКИ ' + pad(G.score, 6), 140, 66, 2, 'y', 'r');
     if (G.newRecord && G.score > 0) { if (blink(0.35)) logoLine(c, 'НОВЫЙ РЕКОРД!', 140, 88, 2, 'G', 'g'); }
     else drawTextOC(c, 'РЕКОРД ' + pad(G.hi, 6), 140, 92, 'w', 1);
-    if (G.overT <= 0 && blink(0.5)) drawTextOC(c, 'НАЖМИ ПРОБЕЛ — ЕЩЁ РАЗ', 140, 116, 'w', 1);
+    if (G.overT <= 0 && blink(0.5)) drawTextOC(c, touchMode ? 'КОСНИСЬ ЭКРАНА — ЕЩЁ РАЗ' : 'НАЖМИ ПРОБЕЛ — ЕЩЁ РАЗ', 140, 116, 'w', 1);
   }
   if (G.toast && G.state !== 'title') drawTextOC(c, G.toast.text, 140, G.toast.y, 'y', 2);
   else if (G.toast) drawTextOC(c, G.toast.text, 140, G.toast.y, 'y', 1);
@@ -1904,10 +2149,12 @@ function present() {
 
 /* ------------------------------ Запуск ------------------------------ */
 function fit() {            // если окно браузера меньше 900×600 — уменьшаем экран целиком
-  const hint = document.getElementById('hint');
-  const room = window.innerHeight - (hint ? hint.offsetHeight + 14 : 0) - 16;
+  if (touchMode) { fitTouch(); return; }
+  document.body.style.height = ''; tv.style.left = ''; tv.style.top = '';
+  const room = window.innerHeight - hintEl.offsetHeight - 14 - 16;
   const s = Math.max(0.3, Math.min(1, (window.innerWidth - 16) / CW, room / CH));
   tv.style.width = Math.round(CW * s) + 'px'; tv.style.height = Math.round(CH * s) + 'px';
+  tv.style.borderRadius = Math.round(46 * s) + 'px';
 }
 let lastTs = 0, acc = 0;
 function frame(ts) {
@@ -1917,6 +2164,7 @@ function frame(ts) {
   if (dt > 0.25) dt = 0.25;
   acc += dt;
   while (acc >= STEP) { update(STEP); acc -= STEP; }
+  syncTouchUi();
   render();
 }
 function init() {
@@ -1924,6 +2172,7 @@ function init() {
   BG = buildBackground();
   TV = buildTvOverlay();
   ctx.imageSmoothingEnabled = false; bx.imageSmoothingEnabled = false;
+  initTouch();
   fit(); window.addEventListener('resize', fit);
   tv.focus(); tv.addEventListener('pointerdown', () => tv.focus());
   requestAnimationFrame(frame);
