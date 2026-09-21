@@ -5,7 +5,9 @@
   Графика (спрайты, кухня, шрифт с кириллицей) и звук (Web Audio) нарисованы и синтезируются в коде.
   Управление: стрелки ← → (или A / D) — двигаться, Пробел — старт, P — пауза, M — звук.
   В телефоне и планшете вместо клавиш появляются кнопки на экране: ход, прыжок, удар, пауза, звук.
-  С третьего уровня на кухню заходят официанты: столкнёшься — повар оглушён, а комбо сбито.
+  За каждые 100 очков приходит заказ: на кухню выбегает официант, а повару прибавляется блюдо для ловли.
+  Когда блюд становится пять, повар кричит «забирай заказ», и официант забирает два блюда.
+  Столкнёшься с официантом — повар оглушён, а комбо сбито.
   После каждых двух уровней повар выходит на огород: собирает 30 овощей (↑ прыжок, Пробел удар сковородкой),
   перепрыгивает камни, давит колорадских жуков и возвращается на кухню. Очки дают дополнительные жизни.
   Для GitHub Pages достаточно выложить этот index.html.
@@ -745,7 +747,8 @@ const Sound = (() => {
     squash: safe(() => { tone(240, 0.14, { slideTo: 60, vol: 0.13 }); noise(0.08, { filter: 'lowpass', freq: 1200, vol: 0.18 }); }),
     harvest: safe(() => seq([392, 494, 587, 784, 988], 0.08, { vol: 0.11, type: 'triangle' })),
     done: safe(() => seq([523, 659, 784, 1047, 784, 1047, 1319, 1568], 0.09, { vol: 0.12 })),
-    blip: safe(() => { tone(500, 0.05, { vol: 0.1 }); tone(750, 0.07, { vol: 0.1, at: ctx.currentTime + 0.05 }); })
+    blip: safe(() => { tone(500, 0.05, { vol: 0.1 }); tone(750, 0.07, { vol: 0.1, at: ctx.currentTime + 0.05 }); }),
+    shout: safe(() => { const t = ctx.currentTime; tone(520, 0.09, { slideTo: 700, vol: 0.13, at: t }); tone(700, 0.18, { slideTo: 980, vol: 0.13, at: t + 0.1 }); })   // «эй!» повара
   };
 
   /* ---------- Музыка: весёлая полька на две дорожки + «хэт» ---------- */
@@ -1018,6 +1021,10 @@ const ZONE_M = 38;        // запас вокруг места, где стои
 const GROUND_Y = 152;     // огород: линия земли, по ней ходит повар
 const HARVEST_GOAL = 30;  // сколько продуктов нужно собрать на огороде
 const COMBO_AT = 10;      // серия из стольких продуктов подряд даёт ×2
+const ORDER_STEP = 100;   // каждые столько очков приходит заказ: выбегает официант и повару прибавляется блюдо
+const DISH_MAX = 5;       // на пятом блюде повар кричит «забирай заказ», и официант уносит часть блюд
+const DISH_TAKE = 2;      // сколько блюд забирает официант
+const ORDER_QUEUE = 3;    // сколько заказов может ждать своего официанта
 const WALK_V = 90, JUMP_V = 210, GRAV = 560;   // огород: скорость ходьбы, сила прыжка, тяжесть
 const REDUCE_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -1035,23 +1042,23 @@ const rndi = (a, b) => Math.floor(rnd(a, b + 1));
 function loadHi() { try { return parseInt(localStorage.getItem('cook.hi') || '0', 10) || 0; } catch (e) { return 0; } }
 function saveHi(v) { try { localStorage.setItem('cook.hi', String(v)); } catch (e) { /* без сохранения */ } }
 
-const cook = { x: 140, off: PAN_DX, face: 1, walkT: 0, moving: false, flick: 0, stun: 0, knockT: 0, kdir: 1, iframes: 0 };
+const cook = { x: 140, off: PAN_DX, face: 1, walkT: 0, moving: false, flick: 0, stun: 0, knockT: 0, kdir: 1, iframes: 0, shoutT: 0 };
 const cat = { x: CAT_HOME, dir: -1, state: 'idle', target: null, eatT: 0, chompT: 0, anim: 0 };
 const G = {
   state: 'title',            // title | play | paused | over
   time: 0, score: 0, hi: loadHi(), lives: 3, level: 1, catches: 0, nextLevelAt: 8,
   combo: 0, nextLife: 1500, readyT: 0, spawnCd: 0, shake: 0, overT: 0, newRecord: false,
-  toast: null, auto: false, foods: [], parts: [], pops: [], waiters: [], waiterCd: 0, waiterHint: 0, resume: 'play', fade: null, noPenalty: false
+  toast: null, auto: false, foods: [], parts: [], pops: [], waiters: [], waiterCd: 0, resume: 'play', fade: null, noPenalty: false,
+  dishes: 1, orders: 0, nextOrder: ORDER_STEP
 };
 
 /* ------------------------------ Сложность ------------------------------ */
 const LV_T = [2.4, 2.4, 2.2, 2.4, 2.2, 2.0, 2.2, 2.0, 1.8, 2.0];   // время полёта еды
-const LV_N = [1, 2, 2, 3, 3, 3, 4, 4, 4, 5];                        // сколько кусков в воздухе
 function levelParams(L) {
   if (G.state === 'title') return { n: 2, T: 1.9, frac: 0.45, Hmin: 70, Hmax: 100 };   // демо на заставке
   const i = Math.min(L, 10) - 1;
   return {
-    n: LV_N[i],
+    n: G.dishes,                                    // сколько блюд в воздухе: +1 за каждые 100 очков
     T: L <= 10 ? LV_T[i] : Math.max(1.75, 2.0 - 0.03 * (L - 10)),
     frac: Math.min(0.85, 0.34 + 0.045 * (L - 1)),   // какую долю скорости повара требует расписание
     Hmin: 92, Hmax: 128
@@ -1131,6 +1138,10 @@ function onFloor(f) {
 function addScore(pts) {
   G.score += pts;
   if (G.score > G.hi) { G.hi = G.score; G.newRecord = true; }
+  while (G.score >= G.nextOrder) {         // каждые 100 очков — заказ: за ним выбежит официант (см. updateWaiters)
+    G.nextOrder += ORDER_STEP;
+    G.orders = Math.min(ORDER_QUEUE, G.orders + 1);
+  }
   while (G.score >= G.nextLife) {          // каждые 1000 очков — дополнительная жизнь (не больше пяти)
     G.nextLife += 1000;
     if (G.lives < 5) { G.lives++; toast('+1 ЖИЗНЬ!'); Sound.sfx.life(); }
@@ -1192,7 +1203,7 @@ function onPress(code) {
   if (code === 'KeyM') {
     const m = Sound.toggleMute();
     drawSoundIcon();
-    toast(m ? 'ЗВУК: ВЫКЛ' : 'ЗВУК: ВКЛ', G.state === 'play' || G.state === 'paused' || G.state === 'harvest' ? 56 : 150);
+    toast(m ? 'ЗВУК: ВЫКЛ' : 'ЗВУК: ВКЛ', G.state === 'paused' ? 150 : G.state === 'play' || G.state === 'harvest' ? 56 : 150);   // на паузе — под строками с текстом
     if (!m) Sound.sfx.blip();
     return;
   }
@@ -1458,7 +1469,6 @@ function trySpawnWaiter() {
     if (!ok) continue;
     ws.push(w);
     Sound.sfx.bell();
-    if (G.waiterHint++ === 0) toast('ОФИЦИАНТ!');
     return true;
   }
   return false;
@@ -1474,20 +1484,37 @@ function bumpCook(w) {                     // официант врезался 
   for (let i = 0; i < 12; i++) G.parts.push({ x: w.x + w.inward * 8, y: 132, vx: rnd(-70, 70), vy: rnd(-120, -30), life: rnd(0.4, 0.9), col: cols[rndi(0, 3)], s: 2 });
   Sound.sfx.bump();
 }
+function deliverOrder() {                  // официант вышел с заказом: у повара прибавляется блюдо
+  const w = G.waiters[G.waiters.length - 1];
+  G.orders--;
+  G.waiterCd = 3;                          // следующий заказ не раньше чем через несколько секунд
+  const added = G.dishes < DISH_MAX;
+  if (added) G.dishes++;
+  toast(added ? 'ЗАКАЗ! +1 БЛЮДО' : 'ЗАКАЗ!');
+  if (G.dishes >= DISH_MAX) { w.pickup = true; cook.shoutT = 2; Sound.sfx.shout(); }   // пять блюд: повар зовёт официанта забрать заказ
+}
+function takeDishes(w) {                   // официант дошёл и забирает блюда прямо из воздуха: они летят к нему на поднос
+  w.took = true;
+  const air = G.foods.filter(f => f.state === 'air' && !f.missed)
+    .sort((a, b) => Math.abs(a.x - w.x) - Math.abs(b.x - w.x)).slice(0, DISH_TAKE);
+  for (const f of air) { f.state = 'taken'; f.takeT = 0; f.fx = f.x; f.fy = f.y; f.who = w; }
+  G.dishes = Math.max(1, G.dishes - DISH_TAKE);
+  toast('ЗАБРАЛИ ' + DISH_TAKE + ' БЛЮДА!');
+  Sound.sfx.pick();
+}
 function updateWaiters(dt) {
-  if (G.state === 'play' && G.level >= 3 && G.readyT <= 0 && !G.noPenalty) {
-    G.waiterCd -= dt;
-    if (G.waiterCd <= 0) {
-      if (G.waiters.length < (G.level >= 7 ? 2 : 1) && trySpawnWaiter()) {
-        const base = Math.max(7, 15 - (G.level - 3) * 1.2);                   // чем выше уровень, тем чаще
-        G.waiterCd = rnd(base * 0.8, base * 1.2);
-      } else G.waiterCd = 1.0;
+  if (G.state === 'play' && G.readyT <= 0 && !G.noPenalty) {
+    if (G.waiterCd > 0) G.waiterCd -= dt;
+    if (G.orders > 0 && G.waiterCd <= 0 && !G.waiters.some(w => w.pickup && !w.took)) {
+      if (G.waiters.length < (G.level >= 7 ? 2 : 1) && trySpawnWaiter()) deliverOrder();
+      else G.waiterCd = 0.5;                                                   // сейчас безопасного пути нет — попробуем чуть позже
     }
   }
   for (const w of G.waiters) {
     w.anim += dt;
     if (w.pause > 0) w.pause -= dt; else w.tau += dt;
     const tIn = w.dIn / w.v;
+    if (w.pickup && !w.took && w.tau >= tIn) takeDishes(w);
     w.x = waiterX(w, w.tau);
     w.dir = w.tau < tIn + w.S ? w.inward : -w.inward;
     w.mode = w.tau <= 0 ? 'warn' : w.pause > 0 ? 'stumble' : w.tau < tIn ? 'in' : w.tau < tIn + w.S ? 'stand' : 'out';
@@ -1547,7 +1574,8 @@ function leaveHarvest() {                    // вызывается посре�
   G.foods = []; G.waiters = []; G.parts = []; G.pops = [];
   cat.x = CAT_HOME; cat.state = 'idle'; cat.target = null; cat.dir = -1;
   cook.x = 140; cook.off = PAN_DX; cook.face = 1; cook.flick = 0; cook.stun = 0; cook.knockT = 0; cook.iframes = 0;
-  G.readyT = 1.3; G.spawnCd = 0; G.waiterCd = Math.max(G.waiterCd, 6);
+  G.readyT = 1.3; G.spawnCd = 0; G.waiterCd = Math.max(G.waiterCd, 4); cook.shoutT = 0;
+  if (G.dishes >= DISH_MAX) G.orders = Math.max(G.orders, 1);   // перед огородом блюд было пять: официант всё равно придёт за заказом
   Sound.music.track(0); Sound.music.tempo(Math.min(176, 132 + G.level * 4));
   sparkle(cook.x, CATCH_Y, true); sparkle(cook.x - 14, CATCH_Y + 6, true); sparkle(cook.x + 14, CATCH_Y + 6, true);
   toast('ПОВАР НА КУХНЕ!');
@@ -1834,19 +1862,18 @@ function resetWorld() {
   G.foods = []; G.parts = []; G.pops = [];
   cat.x = CAT_HOME; cat.state = 'idle'; cat.target = null; cat.dir = -1;
   cook.x = 140; cook.off = PAN_DX; cook.face = 1; cook.flick = 0; cook.walkT = 0;
-  cook.stun = 0; cook.knockT = 0; cook.iframes = 0; G.waiters = []; G.waiterCd = 0;
+  cook.stun = 0; cook.knockT = 0; cook.iframes = 0; cook.shoutT = 0; G.waiters = []; G.waiterCd = 0;
 }
 function startGame() {
   Sound.init();
   G.score = 0; G.lives = 3; G.level = 1; G.catches = 0; G.combo = 0; G.nextLife = 1000; G.nextLevelAt = catchesPerLevel(1); G.fade = null; G.noPenalty = false; G.resume = 'play'; HV = null;
-  G.newRecord = false; G.waiterHint = 0; G.readyT = 1.3; G.spawnCd = 0; G.shake = 0; G.toast = null; G.overT = 0;
+  G.dishes = 1; G.orders = 0; G.nextOrder = ORDER_STEP; G.newRecord = false; G.readyT = 1.3; G.spawnCd = 0; G.shake = 0; G.toast = null; G.overT = 0;
   resetWorld();
   G.state = 'play';
   Sound.music.rewind(); Sound.music.tempo(132); Sound.music.start(); Sound.sfx.start();
 }
 function levelUp() {
   G.level++; G.nextLevelAt += catchesPerLevel(G.level);
-  if (G.level === 3) G.waiterCd = 6;        // с третьего уровня на кухню заходят официанты
   Sound.music.tempo(Math.min(176, 132 + G.level * 4));
   confetti(); Sound.sfx.level();
   if ((G.level - 1) % 2 === 0) {            // пройдено два уровня — повар выходит на огород собирать урожай
@@ -1859,7 +1886,7 @@ function gameOver() {
   G.state = 'over'; G.overT = 0.8;
   Sound.music.stop(); Sound.sfx.over(); saveHi(G.hi);
 }
-function pauseGame() { if (G.state === 'play' || G.state === 'harvest') { G.resume = G.state; G.state = 'paused'; Sound.music.stop(); Sound.sfx.blip(); } }
+function pauseGame() { if (G.state === 'play' || G.state === 'harvest') { G.resume = G.state; G.state = 'paused'; G.toast = null; Sound.music.stop(); Sound.sfx.blip(); } }   // подсказка не должна налезать на «ПАУЗА»
 function resumeGame() { if (G.state === 'paused') { G.state = G.resume || 'play'; Sound.music.start(); Sound.sfx.blip(); } }
 
 // Автопилот: ведёт повара под ближайшую по времени еду (демо на заставке и автотесты)
@@ -1888,6 +1915,7 @@ function updateCook(dt) {
   if (dir !== 0) { cook.face = dir; cook.walkT += dt; } else cook.walkT = 0;
   cook.off += clamp(cook.face * PAN_DX - cook.off, -320 * dt, 320 * dt);
   if (cook.flick > 0) cook.flick = Math.max(0, cook.flick - dt);
+  if (cook.shoutT > 0) cook.shoutT -= dt;
 }
 
 function updateSpawn(dt) {
@@ -1900,6 +1928,13 @@ function updateSpawn(dt) {
 
 function updateFoods(dt) {
   for (const f of G.foods) {
+    if (f.state === 'taken') {                          // летит на поднос официанта и исчезает
+      f.takeT += dt / 0.45; f.rot += dt;
+      const k = Math.min(1, f.takeT), e = k * k * (3 - 2 * k), w = f.who;
+      f.x = f.fx + (w.x + 10 * w.dir - f.fx) * e; f.y = f.fy + (FLOOR_Y - 35 - f.fy) * e;
+      if (k >= 1) { f.state = 'gone'; sparkle(f.x, f.y, false); }
+      continue;
+    }
     if (f.state !== 'air') continue;
     const t0 = f.t, t = (f.t += dt);
     f.x = f.x0 + f.vx * t;
@@ -1952,7 +1987,10 @@ function updateFx(dt) {                     // частицы, всплываю�
   if (G.overT > 0) G.overT -= dt;
 }
 function update(dt) {
-  if (G.state === 'paused') return;       // на паузе время игры стоит
+  if (G.state === 'paused') {             // на паузе время игры стоит, гаснет только подсказка («ЗВУК: ВЫКЛ»)
+    if (G.toast && (G.toast.life -= dt) <= 0) G.toast = null;
+    return;
+  }
   G.time += dt;
   updateFade(dt);
   if (G.state === 'harvest') { updateHarvest(dt); updateFx(dt); return; }
@@ -1994,14 +2032,15 @@ function drawWaiters(c) {
     const walking = w.mode === 'in' || w.mode === 'out';
     const shake = w.mode === 'stumble' ? (Math.floor(w.anim * 24) % 2 ? 1 : -1) : 0;
     c.drawImage(set[walking ? Math.floor(w.anim * 6) % 2 : 0], Math.round(w.x) - (w.dir > 0 ? 12 : 15) + shake, FLOOR_Y - 41);
-    if (w.mode === 'stand') drawBubble(c, 'ЗАКАЗ!', Math.round(w.x), FLOOR_Y - 56);
+    if (w.mode === 'stand') drawBubble(c, w.pickup ? 'ЗАБИРАЮ!' : 'ЗАКАЗ!', Math.round(w.x), FLOOR_Y - 56);
     else if (w.mode === 'stumble') drawBubble(c, 'ОЙ!', Math.round(w.x), FLOOR_Y - 56);
   }
 }
-function drawBubble(c, text, cx, y) {        // облачко с репликой
+function drawBubble(c, text, cx, y, tx) {    // облачко с репликой; tx — где хвостик (по умолчанию по центру)
   const w = textWidth(text, 1) + 6, x = cx - Math.floor(w / 2);
-  c.fillStyle = PAL.k; c.fillRect(x - 1, y - 1, w + 2, 11); c.fillRect(cx - 1, y + 10, 3, 2);
-  c.fillStyle = PAL.w; c.fillRect(x, y, w, 9); c.fillRect(cx, y + 9, 1, 2);
+  tx = clamp(tx === undefined ? cx : tx, x + 3, x + w - 4);
+  c.fillStyle = PAL.k; c.fillRect(x - 1, y - 1, w + 2, 11); c.fillRect(tx - 1, y + 10, 3, 2);
+  c.fillStyle = PAL.w; c.fillRect(x, y, w, 9); c.fillRect(tx, y + 9, 1, 2);
   drawText(c, text, x + 3, y + 1, 'k');
 }
 function drawWarnSign(c, w) {                // мигающий знак у края: «сейчас зайдёт официант»
@@ -2036,6 +2075,11 @@ function drawCook(c) {
     wf: cook.moving ? Math.floor(cook.walkT / 0.1) % 4 : 0, floor: FLOOR_Y, shadowY: FLOOR_Y, panDY: 30 + lift, stun: cook.stun > 0
   });
 }
+function drawCookShout(c) {                  // повар зовёт официанта
+  if (cook.shoutT <= 0) return;
+  const bx = Math.round(clamp(cook.x - cook.off, 11, 269));
+  drawBubble(c, 'ЗАБИРАЙ ЗАКАЗ!', clamp(bx, 48, 232), FLOOR_Y - 60, bx);
+}
 function drawArm(c, x0, y0, x1, y1) {
   const pts = [];
   const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
@@ -2056,7 +2100,7 @@ function drawFoods(c) {
   for (const f of G.foods) {
     const fr = SPR.foods[f.type].f;
     let k = 0;
-    if (f.state === 'air') { const n = Math.floor(f.rot * 7); k = f.spinDir > 0 ? n % 4 : (3 - n % 4); }
+    if (f.state === 'air' || f.state === 'taken') { const n = Math.floor(f.rot * 7); k = f.spinDir > 0 ? n % 4 : (3 - n % 4); }
     const s = fr[k];
     c.drawImage(s, Math.round(f.x - s.width / 2), Math.round(f.y - s.height / 2));
   }
@@ -2112,6 +2156,8 @@ function drawOverlays(c) {
     logoLine(c, 'ПАУЗА', 140, 56, 3, 'y', 'r');
     drawTextOC(c, touchMode ? 'КОСНИСЬ ЭКРАНА' : 'НАЖМИ Р ИЛИ ПРОБЕЛ', 140, 92, 'w', 1);
     drawTextOC(c, 'КАЖДЫЕ 1000 ОЧКОВ: +1 ЖИЗНЬ', 140, 108, 'y', 1);
+    drawTextOC(c, 'КАЖДЫЕ 100 ОЧКОВ: ЗАКАЗ, +1 БЛЮДО', 140, 122, 'y', 1);
+    drawTextOC(c, 'ПЯТЬ БЛЮД: ОФИЦИАНТ ЗАБЕРЁТ ДВА', 140, 134, 'y', 1);
   } else if (G.state === 'over') {
     dim(c, 0.6);
     logoLine(c, 'КОНЕЦ ИГРЫ', 140, 30, 3, 'R', 'r');
@@ -2131,7 +2177,7 @@ function render() {
   } else {
     drawScene(c, G.time);
     if (G.state === 'title') dim(c, 0.5);
-    drawWaiters(c); drawCook(c); drawFoods(c); drawCat(c); drawParticles(c);
+    drawWaiters(c); drawCook(c); drawFoods(c); drawCat(c); drawParticles(c); drawCookShout(c);
     drawHud(c);
   }
   drawOverlays(c);
